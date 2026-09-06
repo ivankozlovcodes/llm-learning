@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 6 · The Quantization Ladder</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+<link rel="stylesheet" href="../assets/quantexplorer.css">
+</head>
+<body>
+<div class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 6 · Local LLM Fluency</p>
+  <h1>The Quantization Ladder</h1>
+  <p class="standfirst">Five lessons have told you to quantize without once pricing what it costs.
+  The bill comes due in a specific place — and it is exactly the place an agent harness depends on.</p>
+  <div class="meta">
+    <span>~20 minutes</span>
+    <span>Prerequisite: <a href="0005-what-fits-in-8gb.html">Lesson 5</a></span>
+    <span><a href="../MISSION.md">Mission</a> · <a href="../GLOSSARY.md">Glossary</a> · <a href="../reference/napkin-math.html">Cheat sheet</a></span>
+  </div>
+</header>
+
+<div class="keystone">
+  <span class="label">The one idea</span>
+  <p>Quantization does not degrade a model evenly. <strong>Recall survives; reasoning breaks.</strong>
+  Between 4-bit and 3-bit, an aggregate benchmark score falls about 4 points while multi-step
+  reasoning falls <strong>9.3</strong> — and commonsense recall barely moves at all.</p>
+  <p>Averaged scores hide this. Tool calling and agent loops are multi-step reasoning, so you feel
+  the damage precisely where you least want it.</p>
+</div>
+
+<h2>Reading the names</h2>
+
+<p>Every GGUF filename encodes its scheme. Once you can parse it, the whole ladder is legible:</p>
+
+<div class="formula">
+  <span class="num">UD</span> – <span class="num">IQ</span><span class="num">4</span>_<span class="num">XS</span>
+  <span class="cap">recipe · family · nominal bits · variant</span>
+</div>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Part</th><th>Means</th></tr></thead>
+  <tbody>
+    <tr><td><code>Q4_0</code>, <code>Q4_1</code></td><td><strong>Legacy.</strong> Uniform block scaling, simple and superseded. Worse quality than a K-quant of the same nominal width.</td></tr>
+    <tr><td><code>Q4_K_M</code></td><td><strong>K-quant.</strong> Super-blocks of 256 weights with hierarchical scales. <code>S</code>/<code>M</code>/<code>L</code> = small/medium/large variant, which controls how many tensors get extra bits.</td></tr>
+    <tr><td><code>IQ4_XS</code></td><td><strong>I-quant.</strong> Codebook/lattice-based, built with an importance matrix. Better quality per bit than K-quants, especially below 4 bits — but more work to decode.</td></tr>
+    <tr><td><code>UD-</code> prefix</td><td><strong>Unsloth Dynamic.</strong> Not a format — a <em>recipe</em>. Each layer gets whichever type minimises loss for that specific model.</td></tr>
+    <tr><td><code>_XL</code>, <code>_XXS</code></td><td>How far the recipe pushes: XL keeps more tensors high-precision, XXS strips harder.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3>Why the bits are never the number on the tin</h3>
+
+<p>Quantization is block-wise: weights are split into blocks, and each block stores its own scale
+(and often a minimum) alongside the quantized values. That metadata is real storage. A 256-weight
+super-block at 4 bits holds 128 bytes of weights plus scales and mins — so <code>Q4_K_M</code>
+lands near <strong>4.9 effective bpw</strong>, not 4.0.</p>
+
+<p>Which is why the only trustworthy way to size a model is the one you saw in Lesson 5: take the
+actual file size and divide by the parameter count.</p>
+
+<div class="formula">
+  effective bpw  =  file size (bytes) × 8  ÷  parameter count
+  <span class="cap">the label is marketing · this is the number</span>
+</div>
+
+<h2>What it actually costs</h2>
+
+<p>A controlled evaluation ran the whole ladder on one model — Llama-3.1-8B-Instruct — measuring
+perplexity, five downstream benchmarks, and throughput. Click through the rungs:</p>
+
+<div class="qexp" data-quantexplorer></div>
+<span class="cite">Source: <a href="https://arxiv.org/html/2601.14277v1">Which Quantization Should I Use? A Unified Evaluation of llama.cpp Quantization on Llama-3.1-8B-Instruct</a> (arXiv 2601.14277).</span>
+
+<h3>The finding that should change your defaults</h3>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Benchmark</th><th class="num">FP16</th><th class="num">Q4_K_S</th><th class="num">Q3_K_S</th><th class="num">Damage at 3-bit</th></tr></thead>
+  <tbody>
+    <tr><td>GSM8K — multi-step reasoning</td><td class="num">77.63</td><td class="num">77.33</td><td class="num">68.31</td><td class="num"><strong>−9.32</strong></td></tr>
+    <tr><td>Aggregate of five benchmarks</td><td class="num">69.47</td><td class="num">69.15</td><td class="num">65.49</td><td class="num">−3.98</td></tr>
+    <tr><td>HellaSwag — commonsense recall</td><td class="num" colspan="3">within ±1 point across every scheme tested</td><td class="num">~0</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Read the last row carefully. <strong>HellaSwag is flat everywhere.</strong> If you evaluated
+quantization on recall-style benchmarks you would conclude 3-bit is nearly free. It is not — it
+just took its payment somewhere else, out of the chain-of-reasoning behaviour that a tool-calling
+agent runs on every single turn.</p>
+
+<div class="sidenote">
+  <strong>Why reasoning first?</strong> A recall answer needs one approximately-right activation.
+  A multi-step chain needs every step right; small per-step errors compound. Quantization adds a
+  little noise to every weight, and compounding is exactly what a long chain does to noise.
+</div>
+
+<h2>The speed dividend</h2>
+
+<p>The same study measured throughput, and it lands exactly where Lesson 1 said it would — fewer
+bytes per token, more tokens per second:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Format</th><th class="num">Size reduction</th><th class="num">Decode</th><th class="num">vs FP16</th></tr></thead>
+  <tbody>
+    <tr><td>FP16</td><td class="num">—</td><td class="num">2.83 t/s</td><td class="num">1.0×</td></tr>
+    <tr><td>Q4_K_S</td><td class="num">70.8%</td><td class="num">4.65 t/s</td><td class="num">1.6×</td></tr>
+    <tr><td>Q5_0</td><td class="num">65.2%</td><td class="num">6.66 t/s</td><td class="num">2.4×</td></tr>
+    <tr><td>Q3_K_S</td><td class="num">77.2%</td><td class="num">9.91 t/s</td><td class="num">3.5×</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>One wrinkle the bandwidth rule alone does not predict: <strong>i-quants decode more slowly per
+byte than k-quants.</strong> Their codebook lookups cost real compute, so an <code>IQ3</code> file
+will not hit the ceiling that a <code>Q3_K</code> file of the same size does. On a bandwidth-starved
+machine that trade is usually still worth it; on a fast GPU it often is not.</p>
+
+<h2>Importance matrices, and how 1.81 bits is possible</h2>
+
+<p>Not all weights matter equally. An <strong>importance matrix</strong> (imatrix) is built by
+running calibration text through the model and recording which weights actually influence outputs.
+The quantizer then spends bits where they matter and starves the rest.</p>
+
+<p><strong>Unsloth Dynamic</strong> (<code>UD-</code>) takes this further: rather than one scheme
+for the whole model, it picks a per-layer type from an analysis of that specific model, calibrated
+on a mix aimed at agentic coding, chat and multilingual use. The layers protected in Gemma differ
+from those protected in Llama.</p>
+
+<p>Which brings us back to your 27B:</p>
+
+<div class="formula">
+  6.19 GB × 8 ÷ 27.3B params  =  <span class="num">1.81 bits per weight</span>
+  <span class="cap">Qwen3.8-27B UD-IQ1_S — an 89% reduction from BF16</span>
+</div>
+
+<p>"1-bit" is the family name, not the measurement. Some tensors sit near 1 bit; attention and
+embedding layers are kept far higher; the average is 1.81. Unsloth report this build retaining
+roughly 72% top-1% accuracy against the unquantized model — a real achievement, and still a
+substantial capability loss.</p>
+
+<div class="note">
+  <span class="tag">When extreme quantization is legitimate</span>
+  <p><strong>Good case:</strong> a very large model, especially a big MoE, where parameter
+  redundancy absorbs the noise. A 235B at 2 bits often beats a 30B at 5 bits, because there is
+  simply more model left after the damage.</p>
+  <p><strong>Bad case:</strong> a small or mid-size dense model, where every weight is already
+  doing work. A 27B dense at 1.81 bpw has no redundancy to spend — and on your 8 GB machine it
+  does not fit anyway.</p>
+</div>
+
+<h2>The question this all builds to</h2>
+
+<p>You have a fixed byte budget. Bigger model quantized harder, or smaller model treated gently?</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Same ~2.5 GB budget</th><th class="num">bpw</th><th>Expected behaviour</th></tr></thead>
+  <tbody>
+    <tr><td>Qwen3-4B at Q4_K_M</td><td class="num">4.98</td><td>Above the bend. Reasoning intact.</td></tr>
+    <tr><td>Qwen3-8B at ~Q2</td><td class="num">2.4</td><td>Below the bend. More knowledge, degraded reasoning.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The working rule: <strong>stay at or above 4 bits, then take the largest model that fits.</strong>
+Cross below 4 only when the model is large enough to have redundancy to spare. For agent work the
+rule is stricter still, because tool calling lives on the reasoning curve, not the recall one — and
+a harness that emits one malformed call in ten is worse than a slower harness that emits none.</p>
+
+<h2>Practical defaults</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Situation</th><th>Take</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>Default, memory available</td><td><code>Q4_K_M</code> / <code>UD-Q4_K_XL</code></td><td>Above the bend, 70% smaller, 1.6× faster</td></tr>
+    <tr><td>Memory to spare, quality first</td><td><code>Q5_K_M</code> / <code>Q6_K</code></td><td>Effectively indistinguishable from FP16</td></tr>
+    <tr><td>Need ~10% more room</td><td><code>IQ4_XS</code></td><td>Better quality per bit than Q4_K_S; costs some decode speed</td></tr>
+    <tr><td>Tight, must fit</td><td><code>UD-Q3_K_XL</code></td><td>The dynamic recipe protects what a plain Q3 would wreck</td></tr>
+    <tr><td>Anything below 3 bits</td><td>A smaller model instead</td><td>Unless the model is very large and sparse</td></tr>
+    <tr><td>Never</td><td><code>Q4_0</code> / <code>Q4_1</code></td><td>Legacy. A K-quant of the same size is strictly better</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <span class="qnum">Question 1</span>
+  <p class="q">Going from 4-bit to 3-bit, which capability degrades most?</p>
+  <div class="options">
+    <button class="opt" data-correct>Multi-step reasoning ability</button>
+    <button class="opt">Commonsense recall accuracy</button>
+    <button class="opt">All capabilities equally</button>
+    <button class="opt">Raw generation throughput</button>
+  </div>
+  <div class="explain">
+    <strong>Multi-step reasoning.</strong> GSM8K fell 9.32 points while HellaSwag stayed within ±1
+    and the five-benchmark aggregate fell under 4. Errors compound along a chain, and quantization
+    noise is applied to every weight in it. Throughput moved the other way — 3-bit is 3.5× faster.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 2</span>
+  <p class="q">Why is Q4_K_M about 4.9 bits per weight rather than 4.0?</p>
+  <div class="options">
+    <button class="opt" data-correct>Block scales cost storage</button>
+    <button class="opt">The name is approximate</button>
+    <button class="opt">Padding aligns the file</button>
+    <button class="opt">Embeddings stay unquantized</button>
+  </div>
+  <div class="explain">
+    <strong>Block scales cost storage.</strong> Weights are quantized in super-blocks, and each
+    stores its own scale and minimum alongside the values. That metadata is real, so effective bpw
+    always exceeds nominal. Some tensors <em>are</em> also kept at higher precision, which adds to
+    it — but the block metadata is the structural reason.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 3</span>
+  <p class="q">A file is 6.19 GB for a 27.3B-parameter model. What is its effective bits per weight?</p>
+  <div class="options">
+    <button class="opt" data-correct>About 1.8 bits</button>
+    <button class="opt">About 1.0 bits</button>
+    <button class="opt">About 2.9 bits</button>
+    <button class="opt">About 4.5 bits</button>
+  </div>
+  <div class="explain">
+    <strong>~1.81 bits.</strong> 6.19 × 10⁹ × 8 ÷ 27.3 × 10⁹. This is the calculation that lets you
+    ignore every quant label you are shown: file size and parameter count are both published, so
+    the real number is always available to you.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 4</span>
+  <p class="q">Fixed byte budget for an agent harness. Which choice is generally right?</p>
+  <div class="options">
+    <button class="opt" data-correct>Smaller model, four bits</button>
+    <button class="opt">Bigger model, two bits</button>
+    <button class="opt">Either, they're equivalent</button>
+    <button class="opt">Biggest model, one bit</button>
+  </div>
+  <div class="explain">
+    <strong>Smaller model at 4 bits.</strong> Stay above the bend, then take the largest model that
+    fits there. The exception is very large sparse models — a 235B MoE at 2 bits has redundancy a
+    27B dense model does not. For tool-calling work the rule tightens, since reliability lives on
+    the reasoning curve that low-bit quantization damages first.
+  </div>
+</div>
+
+<div class="scoreboard" data-scoreboard></div>
+
+<h2>Hear it for yourself</h2>
+
+<p>If you pulled the ladder, this is the experiment. Same model, four precisions, one at a time:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>File</th><th class="num">Size</th><th>Ask it</th></tr></thead>
+  <tbody>
+    <tr><td><code>Qwen3-4B-Instruct-2507-Q8_0</code></td><td class="num">4.28 GB</td><td>Your reference. Short context only on 8 GB.</td></tr>
+    <tr><td><code>Qwen3-4B-Instruct-2507-Q4_K_M</code></td><td class="num">2.50 GB</td><td>Should be indistinguishable from the above.</td></tr>
+    <tr><td><code>Qwen3-4B-Instruct-2507-Q2_K</code></td><td class="num">1.67 GB</td><td>Where it starts to show.</td></tr>
+    <tr><td><code>Qwen3-4B-Instruct-2507-UD-IQ1_S</code></td><td class="num">1.08 GB</td><td>The far end.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Prompt them with something multi-step — a word problem with three stages, or a request to emit
+strict JSON matching a schema — rather than a factual question. Factual questions will make all
+four look fine, which is the whole trap this lesson is about.</p>
+
+<div class="ask">
+  <strong>Your teacher is one message away.</strong> Worth asking: "how do I build my own imatrix?",
+  "does KV cache quantization damage reasoning the same way?", or "what quant should the 64 GB
+  machine run for pi?"
+</div>
+
+<nav class="footer-nav">
+  <strong>Workspace</strong>
+  <ul>
+    <li><a href="0005-what-fits-in-8gb.html">Lesson 5 · What Fits in 8 GB</a></li>
+    <li><a href="0004-the-tops-trap.html">Lesson 4 · The TOPS Trap</a></li>
+    <li><a href="0003-the-cache-has-a-price.html">Lesson 3 · The Cache Has a Price</a></li>
+    <li><a href="../reference/napkin-math.html">Reference · Napkin math cheat sheet</a></li>
+    <li><a href="../GLOSSARY.md">Glossary</a> · <a href="../RESOURCES.md">Resources</a> · <a href="../MISSION.md">Mission</a></li>
+  </ul>
+</nav>
+
+</div>
+<script src="../assets/quiz.js"></script>
+<script src="../assets/quantexplorer.js"></script>
+</body>
+</html>

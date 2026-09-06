@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 17 · Input and Output Tokens</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+<link rel="stylesheet" href="../assets/calc.css">
+</head>
+<body>
+<div class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 17 · Local LLM Fluency</p>
+  <h1>Input and Output Tokens</h1>
+  <p class="standfirst">Every cost in this workspace is quoted per token. This is the lesson about
+  the token itself — how one gets counted, why the two directions cost such different amounts, and
+  why your agent produces so few of the expensive kind.</p>
+  <div class="meta">
+    <span>~20 minutes</span>
+    <span>Prerequisites: <a href="0001-the-bandwidth-rule.html">Lesson 1</a>, <a href="0002-the-cost-of-a-turn.html">Lesson 2</a></span>
+    <span><a href="../MISSION.md">Mission</a> · <a href="../GLOSSARY.md">Glossary</a> · <a href="../reference/napkin-math.html">Cheat sheet</a></span>
+  </div>
+</header>
+
+<div class="keystone">
+  <span class="label">The one idea</span>
+  <p>An <strong>output</strong> token costs one full pass over the weights. An <strong>input</strong>
+  token costs a fraction of one, because prefill reads the weights once and applies them to the whole
+  prompt at once. On your M1 that is a measured <strong>8.3×</strong> gap.</p>
+  <p>And the moment an output token is produced it becomes an input token — re-read on every
+  subsequent turn, for the rest of the session.</p>
+</div>
+
+<h2>What a token actually is</h2>
+
+<p>A token is an entry in a fixed vocabulary that the tokenizer built by merging frequent character
+pairs — byte-pair encoding. Qwen3's vocabulary holds <strong>151,669</strong> of them. Common English
+words are single tokens; rare strings get chopped into pieces.</p>
+
+<p>The folk rule is "about four characters per token". It is true for English prose and badly wrong
+for the things an agent harness actually moves around. Every figure below was measured by running
+the text through <code>Qwen/Qwen3-1.7B</code>'s tokenizer:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Content</th><th class="num">Chars</th><th class="num">Tokens</th><th class="num">Chars/token</th><th class="num">vs prose</th></tr></thead>
+  <tbody>
+    <tr><td>English prose</td><td class="num">272</td><td class="num">55</td><td class="num">4.95</td><td class="num">1.0×</td></tr>
+    <tr><td>JSON tool schema</td><td class="num">277</td><td class="num">60</td><td class="num">4.62</td><td class="num">1.1×</td></tr>
+    <tr><td>TypeScript source</td><td class="num">307</td><td class="num">75</td><td class="num">4.09</td><td class="num">1.2×</td></tr>
+    <tr><td>Unified diff</td><td class="num">348</td><td class="num">96</td><td class="num">3.62</td><td class="num">1.4×</td></tr>
+    <tr><td>Russian prose</td><td class="num">125</td><td class="num">37</td><td class="num">3.38</td><td class="num">1.5×</td></tr>
+    <tr class="hi"><td><strong>Directory listing (<code>ls -la</code>)</strong></td><td class="num">276</td><td class="num">150</td><td class="num"><strong>1.84</strong></td><td class="num"><strong>2.7×</strong></td></tr>
+    <tr class="hi"><td><strong>Hashes, UUIDs, hex</strong></td><td class="num">156</td><td class="num">146</td><td class="num"><strong>1.07</strong></td><td class="num"><strong>4.6×</strong></td></tr>
+    <tr class="hi"><td><strong>Bare numbers</strong></td><td class="num">117</td><td class="num">117</td><td class="num"><strong>1.00</strong></td><td class="num"><strong>5.0×</strong></td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Measured locally against <a href="https://huggingface.co/Qwen/Qwen3-1.7B/blob/main/tokenizer.json"><code>Qwen/Qwen3-1.7B</code>'s <code>tokenizer.json</code></a> using the <a href="https://github.com/huggingface/tokenizers">tokenizers</a> library. Whole real files land in between: this workspace's lesson HTML is 3.43 chars/token, its JavaScript 3.22, its Markdown 4.39.</span>
+
+<div class="keystone">
+  <span class="label">The finding worth keeping</span>
+  <p><strong>Qwen3 tokenizes every digit separately.</strong> <code>1720574976</code> is ten tokens.
+  <code>68.25</code> is five. A UUID is one token per character.</p>
+  <p>So a tool that returns numeric tables, hashes, timestamps or aligned columns costs
+  <strong>three to five times</strong> the tokens per character that prose does. This is the hidden
+  half of <a href="0010-tool-design.html">Lesson 10's</a> token bill: it is not only how much your
+  tool returns, it is what kind of characters they are.</p>
+</div>
+
+<h2>Why output costs more</h2>
+
+<p>This is <a href="0001-the-bandwidth-rule.html">Lesson 1</a> and <a href="0002-the-cost-of-a-turn.html">Lesson 2</a>
+seen from the token's point of view.</p>
+
+<div class="formula">
+  <span class="cap">prefill — one input token</span>
+  weights read <span class="op">÷</span> <span class="num">N</span> prompt tokens
+  <span class="op">→</span> a <em>fraction</em> of a pass, compute-bound<br><br>
+  <span class="cap">decode — one output token</span>
+  <span class="num">one</span> full pass over every active weight
+  <span class="op">→</span> bandwidth-bound
+</div>
+
+<p>Prefill reads each weight once and multiplies it against the entire prompt, so the arithmetic
+intensity is high and the chip's compute is the limit. Decode reads every weight to produce a single
+token, so intensity is about 2 FLOPs per byte and bandwidth is the limit. Same weights, same machine,
+two completely different regimes — which is exactly the roofline argument from
+<a href="0004-the-tops-trap.html">Lesson 4</a>.</p>
+
+<p>The gap is measurable. From the community <code>llama-bench</code> table, llama 7B Q4_0 on Metal:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Machine</th><th class="num">Prefill (pp512)</th><th class="num">Decode (tg128)</th><th class="num">Ratio</th></tr></thead>
+  <tbody>
+    <tr class="hi"><td><strong>M1, 8-core GPU</strong> — your travel laptop</td><td class="num">117.96 tok/s</td><td class="num">14.15 tok/s</td><td class="num"><strong>8.3×</strong></td></tr>
+    <tr><td>M1 Max, 32-core GPU</td><td class="num">530.06 tok/s</td><td class="num">61.19 tok/s</td><td class="num">8.7×</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">From <a href="https://github.com/ggml-org/llama.cpp/discussions/4167">llama.cpp Discussion #4167</a>, the community Apple Silicon benchmark table. Both rows are llama 7B Q4_0, Metal backend, <code>ngl 99</code>.</span>
+
+<div class="sidenote">
+  <strong>The ratio is a property of the machine, not the model.</strong> M1 and M1 Max differ by
+  4.5× in absolute speed and by almost nothing in the <em>ratio</em> — both are Apple chips with a
+  similar compute-to-bandwidth balance. Change that balance and the ratio moves violently: on the DGX
+  Spark, Llama-70B FP8 runs at 803 tok/s of prefill against 2.7 tok/s of decode, a ratio near 300.
+  A machine's prefill-to-decode ratio <em>is</em> its ridge point from Lesson 4, wearing different
+  clothes. <span class="cite">Spark figures from the <a href="https://www.lmsys.org/blog/2025-10-13-nvidia-dgx-spark/">LMSYS DGX Spark review</a>; different model and precision, so read the ratio, not the absolute numbers.</span>
+</div>
+
+<h2>The market prices the same physics</h2>
+
+<p>You are running locally, so nobody bills you. But hosted pricing is a useful independent check on
+whether the asymmetry is real, because providers have every incentive to price it accurately:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Model</th><th class="num">Input /MTok</th><th class="num">Output /MTok</th><th class="num">Cached input</th><th class="num">Output ÷ cached</th></tr></thead>
+  <tbody>
+    <tr><td>Opus 5</td><td class="num">$5</td><td class="num">$25</td><td class="num">$0.50</td><td class="num">50×</td></tr>
+    <tr><td>Sonnet 5</td><td class="num">$2</td><td class="num">$10</td><td class="num">$0.20</td><td class="num">50×</td></tr>
+    <tr><td>Haiku 4.5</td><td class="num">$1</td><td class="num">$5</td><td class="num">$0.10</td><td class="num">50×</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">From <a href="https://claude.com/pricing">claude.com/pricing</a>. The 5× output multiplier and the 10% cache-read rate hold across every model in the list.</span>
+
+<p>Output is priced at exactly <strong>5×</strong> input, and a cache hit costs <strong>10%</strong>
+of input — so a cached input token is <strong>50× cheaper</strong> than an output token. Your local
+machine's numbers differ (8.3× rather than 5×, and a cache hit is free rather than 10%), but the
+shape is identical, and it points at the same design conclusion: <strong>protect the cache, and be
+careful what you generate.</strong></p>
+
+<h2>Why output is usually so much smaller</h2>
+
+<p>Now the part that surprises people. Output tokens are the expensive ones, and an agent harness
+produces almost none of them. Measured, on a modest seven-tool harness:</p>
+
+<div class="formula">
+  static prefix, before you type anything <span class="op">·</span> <span class="num">1,706</span> tokens<br>
+  one assistant tool call <span class="op">·</span> <span class="num">31</span> tokens<br>
+  <span class="cap">55 input tokens for every output token — on turn one, with no history at all</span>
+</div>
+
+<p>Three things drive it, and they compound:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Cause</th><th>Effect</th></tr></thead>
+  <tbody>
+    <tr><td>Output stops; input accumulates</td><td>The model emits an end-of-turn token after a short call. The input is everything ever said, plus every tool result.</td></tr>
+    <tr><td>Input is re-sent every turn</td><td>Turn 20 re-reads all nineteen previous turns. Output is produced once.</td></tr>
+    <tr><td>Tool results dwarf tool calls</td><td>A 31-token call can return 8,572 tokens of file. You spend a little output to buy a lot of input.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="keystone">
+  <span class="label">The ratchet</span>
+  <p>Every output token is paid for <strong>twice</strong>: once at the decode price to produce it,
+  and then on every later turn at the prefill price to re-read it. It never leaves. It is only ever
+  removed by compaction (<a href="0011-compaction-policy.html">Lesson 11</a>), which costs an
+  uncached turn to perform.</p>
+  <p>This is why <a href="0009-anatomy-of-a-turn.html">Lesson 9's</a> "tool results are next turn's
+  prefill" is the most load-bearing sentence in this workspace.</p>
+</div>
+
+<h2>Price it yourself</h2>
+
+<div class="calc" data-tokenmeter></div>
+
+<div class="reveal">
+  <span class="tag">Predict first</span>
+  <p class="prompt">A pi tool of yours runs <code>git log --oneline</code> and returns the raw output
+  — 2,012 characters of short hashes and subject lines. Two questions before you look. Roughly how
+  many tokens? And which <em>half</em> of that text is doing the damage?</p>
+  <button class="show-answer">Reveal</button>
+  <div class="answer">
+    <p><strong>678 tokens, measured</strong> — 2.97 chars/token. The four-chars rule predicts 503, so
+    it is 35% low. Not catastrophic, and that is the boring half of the answer.</p>
+    <p>The interesting half is the split. The seven-character hashes are <strong>439 characters — 22%
+    of the text — and 401 tokens, 59% of the bill</strong>, at 1.09 chars/token. The subject lines are
+    the other 78% of the characters and only 41% of the tokens, at 4.47. <strong>A fifth of the
+    output is costing you three-fifths of the tokens.</strong></p>
+    <p>So the fix is not "return less". It is "return <code>--format=%s</code>" — drop the hashes and
+    you shed 59% of the token cost while keeping 78% of the text and almost all of the meaning. On the
+    M1, 678 tokens is 5.7 s of prefill on arrival, 98 MB of KV cache held for the session, and about
+    1.9 minutes of repeated prefill across twenty uncached turns.</p>
+  </div>
+</div>
+
+<h2>Reasoning tokens invert everything</h2>
+
+<p>A thinking block is output. It is generated one token at a time, at decode speed, at the expensive
+end of the asymmetry — and on an 8 GB M1 that is around <strong>14 tokens per second</strong>.</p>
+
+<div class="formula">
+  2,000 thinking tokens <span class="op">÷</span> 14 tok/s <span class="op">=</span>
+  <span class="num">~2.4 minutes</span>
+  <span class="cap">per turn, before the model says anything you can read</span>
+</div>
+
+<p>A reasoning model turns the agent's normally-favourable token shape upside down: the one workload
+where output volume becomes the dominant cost. On the 64 GB machine at ~100 tok/s it is twenty
+seconds and probably worth it. On the travel laptop it usually is not — which is a routing decision
+(<a href="0012-multi-model-routing.html">Lesson 12</a>), and a reason to check whether your model
+lets you disable thinking per-request.</p>
+
+<hr>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <span class="qnum">Question 1</span>
+  <p class="q">Why does one output token cost more than one input token?</p>
+  <div class="options">
+    <button class="opt">Output tokens are sampled, not read</button>
+    <button class="opt" data-correct>Each needs a full weight pass</button>
+    <button class="opt">Output tokens are stored in cache</button>
+    <button class="opt">Providers charge more for output</button>
+  </div>
+  <div class="explain">
+    <strong>Each output token needs a full pass over the weights.</strong> Prefill amortises one
+    weight read across the whole prompt; decode cannot, because token <em>n</em>+1 depends on token
+    <em>n</em>. Pricing reflects that fact rather than causing it.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 2</span>
+  <p class="q">Which tool output costs the most tokens per character?</p>
+  <div class="options">
+    <button class="opt">A paragraph of English prose</button>
+    <button class="opt">A JSON schema definition</button>
+    <button class="opt" data-correct>A table of commit hashes</button>
+    <button class="opt">A block of TypeScript source</button>
+  </div>
+  <div class="explain">
+    <strong>Commit hashes.</strong> Measured at 1.07 chars/token against prose's 4.95 — roughly 4.6×
+    worse. Digits and hex tokenize close to one token per character, so hashes, UUIDs, timestamps and
+    numeric tables are the most expensive text an agent can move.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 3</span>
+  <p class="q">Your harness sends 1,706 input tokens and gets 31 back. Which dominates the wait?</p>
+  <div class="options">
+    <button class="opt" data-correct>Input, if the cache missed</button>
+    <button class="opt">Output, since decode is slower</button>
+    <button class="opt">Neither — they roughly cancel</button>
+    <button class="opt">Output, since it is sequential</button>
+  </div>
+  <div class="explain">
+    <strong>Input, on an uncached turn.</strong> 1,706 ÷ 118 = 14.5 s of prefill against 31 ÷ 14.15 =
+    2.2 s of decode. Decode is 8.3× more expensive <em>per token</em>, but there are 55× more input
+    tokens, so input wins by about 6.5×. On a cache hit the prefill approaches zero and decode
+    becomes the whole wait — which is why cache reuse changes the felt character of a session.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 4</span>
+  <p class="q">What happens to an output token once the turn ends?</p>
+  <div class="options">
+    <button class="opt">It is dropped from the context</button>
+    <button class="opt">It is summarised on the next turn</button>
+    <button class="opt" data-correct>It becomes input on every turn</button>
+    <button class="opt">It stays cached and costs nothing</button>
+  </div>
+  <div class="explain">
+    <strong>It becomes an input token, permanently.</strong> Paid once at the decode price, then
+    re-read at the prefill price on every subsequent turn until compaction removes it. Cheap on a
+    cache hit, expensive on a miss, and it occupies KV cache the whole time either way.
+  </div>
+</div>
+
+<div class="scoreboard" data-scoreboard></div>
+
+<div class="source">
+  <span class="tag">Read this next</span>
+  <span class="title">Hugging Face — Tokenizers: the BPE algorithm, and the tokenizer playground</span>
+  <p>The library used for every measurement in this lesson, and the clearest explanation of what
+  byte-pair encoding actually does to your text. Twenty minutes with your own tool output pasted into
+  it will teach you more about your token bill than any table can.
+  <a href="https://huggingface.co/learn/nlp-course/chapter6/5">huggingface.co/learn/nlp-course/chapter6/5</a></p>
+</div>
+
+<div class="ask">
+  <strong>Your teacher is one message away.</strong> Worth asking: "measure the real token count of
+  this tool output", "which of my pi tools returns the most expensive characters?", or "work out
+  whether thinking is worth it on the 8 GB machine for my workload".
+</div>
+
+<div class="addendum">
+  <span class="label">Addendum · the 48 GB M4</span>
+  <span class="when">Added 2026-09-05 — the lesson above stands as written; this is what a third machine changes.</span>
+  <p>The <strong>8.3× prefill-to-decode ratio</strong> measured here is a property of the M1's
+  compute-to-bandwidth balance, not a universal constant — the sidenote above says so, and a third
+  machine is the demonstration. The token meter now offers <strong>M4 Pro</strong> and
+  <strong>M4 Max</strong> rows; switch between them and watch both the absolute rates and the ratio
+  move.</p>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Machine</th><th class="num">Bandwidth</th><th class="num">Decode, Qwen3-4B</th><th class="num">vs the M1</th></tr></thead>
+    <tbody>
+      <tr><td>8 GB M1</td><td class="num">68.25 GB/s</td><td class="num">~18 tok/s</td><td class="num">1×</td></tr>
+      <tr><td>48 GB M4 Pro</td><td class="num">273 GB/s</td><td class="num">~76 tok/s</td><td class="num">4.0×</td></tr>
+      <tr class="hi"><td><strong>48 GB M4 Max</strong></td><td class="num">546 GB/s</td><td class="num">~153 tok/s</td><td class="num"><strong>8.0×</strong></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p><strong>Apple sells 48 GB on both chips</strong>, and they differ by exactly 2× in the
+  specification that sets decode speed. Check which one you have before predicting anything —
+  <code>sysctl -n machdep.cpu.brand_string</code>, then the GPU core count. A 40-core M4 Max is the
+  fastest machine in this workspace, home included.</p>
+  <p>What does <em>not</em> move: every chars-per-token figure in this lesson. Tokenization is a
+  property of the tokenizer, so hashes still cost 1.07 chars/token on all three machines, and the
+  ratchet — output becoming input forever — is unchanged. More bandwidth makes the bill arrive
+  faster, not smaller. See <a href="../reference/three-machines.html">Three Machines</a>.</p>
+</div>
+
+<nav class="footer-nav">
+  <strong>Workspace</strong>
+  <ul>
+    <li><a href="../index.html">Workspace index — all lessons</a></li>
+    <li><a href="0018-the-context-window.html">Lesson 18 · The Context Window</a> — what these tokens fill up</li>
+    <li><a href="0009-anatomy-of-a-turn.html">Lesson 9 · Anatomy of a Turn</a> · <a href="0010-tool-design.html">Lesson 10 · Tool Design</a></li>
+    <li><a href="../reference/napkin-math.html">Reference · Napkin math</a> · <a href="../GLOSSARY.md">Glossary</a> · <a href="../MISSION.md">Mission</a></li>
+  </ul>
+</nav>
+
+</div>
+<script src="../assets/quiz.js"></script>
+<script src="../assets/tokenmeter.js"></script>
+</body>
+</html>

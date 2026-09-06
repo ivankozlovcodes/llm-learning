@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reference · Three Machines</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<style>
+  .page { max-width: 50rem; padding-top: 3rem; }
+  .rule-card { border: 1px solid var(--rule); border-radius: 5px; padding: 0.9rem 1.1rem; margin-bottom: 0.8rem; font-size: 0.92rem; }
+  .rule-card .n { font-family: var(--mono); font-weight: 700; color: var(--accent); }
+  @media print { .page { padding-top: 0; } h2 { margin-top: 1.6rem; } body { font-size: 9.5pt; } }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Reference · Local LLM Fluency</p>
+  <h1>Three Machines</h1>
+  <p class="standfirst">A 48 GB M4 joins the trip. Every budget in this workspace was written for
+  two machines; here is the third, and the short list of conclusions it overturns.</p>
+  <div class="meta">
+    <span>Added 2026-09-05</span>
+    <span>Amends <a href="../lessons/0005-what-fits-in-8gb.html">5</a> · <a href="../lessons/0012-multi-model-routing.html">12</a> · <a href="../lessons/0016-fine-tuning-and-soup.html">16</a> · <a href="../lessons/0017-input-and-output-tokens.html">17</a> · <a href="../lessons/0018-the-context-window.html">18</a> · <a href="../lessons/0019-embeddings-and-retrieval.html">19</a></span>
+    <span><a href="napkin-math.html">Napkin Math</a> · <a href="../GLOSSARY.md">Glossary</a></span>
+  </div>
+</header>
+
+<div class="note">
+  <span class="tag">Check this before trusting any number below</span>
+  <p>Apple sells <strong>48 GB on two different chips</strong>, and they differ by 2× in the
+  specification that governs decode speed:</p>
+  <p><strong>M4 Pro — 273 GB/s.</strong> 12-core CPU / 16-core GPU, or 14-core / 20-core.<br>
+  <strong>M4 Max (16-core CPU, 40-core GPU) — 546 GB/s.</strong></p>
+  <p>Run <code>sysctl -n machdep.cpu.brand_string</code> and check the GPU core count in
+   → About This Mac. If it says Max with 40 GPU cores, it is <strong>the fastest machine you
+  own</strong> — faster than the 64 GB M1 Max at home. If it says Pro, it is about two-thirds of
+  the home machine's bandwidth.
+  <span class="cite">Configurations and bandwidth from <a href="https://support.apple.com/en-us/121553">Apple's MacBook Pro (14-inch, M4 Pro or M4 Max) tech specs</a>: "273GB/s memory bandwidth" for both M4 Pro tiers; "410GB/s" for the 14-core M4 Max and "546GB/s" for the 16-core; 48 GB is offered on "M4 Pro and M4 Max with 16-core CPU".</span></p>
+</div>
+
+<h2>The three machines</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th></th><th class="num">8 GB M1</th><th class="num">48 GB M4 Pro</th><th class="num">48 GB M4 Max</th><th class="num">64 GB M1 Max</th></tr></thead>
+  <tbody>
+    <tr><td>Memory bandwidth</td><td class="num">68.25 GB/s</td><td class="num">273 GB/s</td><td class="num">546 GB/s</td><td class="num">400 GB/s</td></tr>
+    <tr><td>Practical model budget</td><td class="num">4.2 GB</td><td class="num">~36 GB</td><td class="num">~36 GB</td><td class="num">48 GB</td></tr>
+    <tr><td>Bandwidth vs the 8 GB</td><td class="num">1×</td><td class="num">4.0×</td><td class="num">8.0×</td><td class="num">5.9×</td></tr>
+    <tr><td>On the trip?</td><td class="num">yes</td><td class="num">yes</td><td class="num">yes</td><td class="num">no</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The 36 GB figure follows the same convention the rest of the workspace uses — roughly 75% of
+installed memory, which is where macOS's default GPU wired limit sits. It is the number to budget
+against, not 48.</p>
+
+<h2>Predicted decode speed</h2>
+
+<p>Lesson 1's rule, unchanged: <code>bandwidth ÷ active bytes × efficiency</code>, at 0.7 on Apple
+Silicon. Nothing here is measured — run <code>llama-bench</code> and replace these.</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Model</th><th class="num">Active bytes</th><th class="num">8 GB M1</th><th class="num">M4 Pro</th><th class="num">M4 Max</th><th class="num">64 GB M1 Max</th></tr></thead>
+  <tbody>
+    <tr><td>Qwen3-4B Q4_K_M</td><td class="num">2.50 GB</td><td class="num">~18</td><td class="num">~76</td><td class="num">~153</td><td class="num">~112</td></tr>
+    <tr class="hi"><td><strong>Ornith-1.5-35B-A3B Q4_K_M</strong></td><td class="num">1.86 GB</td><td class="num">—</td><td class="num"><strong>~103</strong></td><td class="num"><strong>~205</strong></td><td class="num">~150</td></tr>
+    <tr><td>Qwen3.8-27B Q4_K_M</td><td class="num">16.46 GB</td><td class="num">—</td><td class="num">~12</td><td class="num">~23</td><td class="num">~17</td></tr>
+  </tbody>
+</table>
+</div>
+<p>Ornith is a Mixture-of-Experts model, so its active bytes are ~3B of 35B parameters — which is
+why a 21.71 GB model decodes <em>faster</em> than a 2.50 GB dense one. Lesson 1's distinction,
+paying off exactly where it said it would.</p>
+
+<h2>What 36 GB unlocks</h2>
+
+<div class="rule-card"><span class="n">The travel machine becomes a real machine.</span>
+Ornith-1.5-35B-A3B at 21.71 GB fits with 14.29 GB to spare — that is <strong>Lesson 15's
+recommendation for the 64 GB machine, now in your bag</strong>. So does Qwen3.8-27B (16.46),
+Qwen3-30B-A3B (~18.7) and Qwen3 32B (~20.1). Llama 3.3 70B at 42.5 GB still does not.</div>
+
+<div class="rule-card"><span class="n">Two models resident at once.</span>
+Ornith (21.71) plus the WeMM-Embedding-9B embedder with its vision tower (6.252) is
+<strong>27.96 GB</strong>, leaving 8.04 GB — about 100,000 tokens of KV cache at 80 KB/token.
+Generation and retrieval, simultaneously, on a laptop. Neither fits alone on the 8 GB machine.</div>
+
+<div class="rule-card"><span class="n">Real fine-tuning.</span>
+A <em>full</em> fine-tune of Qwen3-1.7B costs 19.60 GB and now fits — no LoRA required. QLoRA on a
+4B at batch 4 and 2048 tokens comes to about 14 GB, so batch size stops being pinned at 1.</div>
+
+<div class="rule-card"><span class="n">The binding constraint flips.</span>
+On the 8 GB machine <em>memory</em> binds at ~11,800 tokens. On the M4 with Ornith the memory
+ceiling is <strong>178,625 tokens</strong> and the attention ceiling is ~32,000 — so
+<strong>attention binds, by 5.6×</strong>, exactly as it does on the home machine. The failure mode
+changes from loud to silent.</div>
+
+<h2>What does not change</h2>
+
+<div class="rule-card"><span class="n">The 8 GB machine still exists.</span>
+It is still in the bag, and every 4.2 GB conclusion still applies when you are using it. Nothing in
+Lessons 5, 16, 17, 18 or 19 was wrong; a fourth column was added to the table.</div>
+
+<div class="rule-card"><span class="n">Tokenization, ordering, the cache rule.</span>
+Lesson 17's chars-per-token measurements, Lesson 18's stable&rarr;volatile ordering, Lesson 2's
+byte-identical prefix rule — all machine-independent. More memory buys none of them.</div>
+
+<div class="rule-card"><span class="n">Attention degradation.</span>
+36 GB of KV cache does not make a model reliable over 178,000 tokens. Context rot is a property of
+the model, not the machine, and the extra memory makes it <em>easier</em> to walk into.</div>
+
+<h2>Per-lesson deltas</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Lesson</th><th>What changes on the M4</th></tr></thead>
+  <tbody>
+    <tr><td><a href="../lessons/0005-what-fits-in-8gb.html">5 · What Fits in 8 GB</a></td>
+        <td>4.2 GB → 36 GB. A 35B MoE replaces a 4B dense model, and the KV cache stops being a third of the budget.</td></tr>
+    <tr><td><a href="../lessons/0012-multi-model-routing.html">12 · Multi-Model Routing</a></td>
+        <td>Routing becomes available <em>on the trip</em>. New pattern: the M4 serves the M1 over the local network.</td></tr>
+    <tr><td><a href="../lessons/0016-fine-tuning-and-soup.html">16 · Fine-Tuning and Soup</a></td>
+        <td>Full fine-tuning of a 1.7B fits. Batch size and sequence length become adjustable. Souping several runs becomes practical in one sitting.</td></tr>
+    <tr><td><a href="../lessons/0017-input-and-output-tokens.html">17 · Input and Output Tokens</a></td>
+        <td>The 8.3× prefill/decode ratio is a property of the chip's compute-to-bandwidth balance, so it moves. Absolute rates rise 4–8×.</td></tr>
+    <tr><td><a href="../lessons/0018-the-context-window.html">18 · The Context Window</a></td>
+        <td>Which ceiling binds flips from memory to attention. A memory-only compaction trigger is now wrong on <em>two</em> of your three machines.</td></tr>
+    <tr><td><a href="../lessons/0019-embeddings-and-retrieval.html">19 · Embeddings</a></td>
+        <td>The 9B embedder fits. You can build the index on the trip instead of carrying one — though carrying it is still cheaper.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Which machine for which job</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Job</th><th>Machine</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>Agent sessions on the trip</td><td><strong>M4</strong></td><td>~103–205 tok/s on a 35B-class model against ~18 on a 4B</td></tr>
+    <tr><td>Anything while the M4 is unavailable</td><td>8 GB M1</td><td>Qwen3-4B Q4_K_M, 8k context, Lesson 5's budget unchanged</td></tr>
+    <tr><td>Building a retrieval index</td><td>M4, or home</td><td>Prefill-bound; the M1 is 4–8× slower and the index is portable</td></tr>
+    <tr><td>Fine-tuning experiments</td><td>M4</td><td>Full FT of a 1.7B, or QLoRA with a real batch size</td></tr>
+    <tr><td>Anything needing &gt;36 GB</td><td>Home</td><td>Llama 3.3 70B at Q4 is 42.5 GB and fits nowhere else</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <span class="tag">One caution about the corp machine</span>
+  <p>It is not yours. Disk encryption, MDM inventory agents and DLP tooling all sit between you and
+  a 22 GB model file, and some of them will scan it every time it is read. Keep models under your
+  own home directory, expect the first load after a reboot to be slow, and check whether your
+  employer's policy covers downloading multi-gigabyte model weights before you fill the disk with
+  them. Nothing in this workspace requires you to put anything confidential into a model.</p>
+</div>
+
+<nav class="footer-nav">
+  <strong>Workspace</strong>
+  <ul>
+    <li><a href="../index.html">Workspace index</a> · <a href="napkin-math.html">Napkin Math</a> · <a href="finetuning-and-merging.html">Fine-Tuning &amp; Merging</a></li>
+    <li><a href="../OFFLINE-SETUP.md">Offline setup</a> — runs on both trip machines</li>
+    <li><a href="../GLOSSARY.md">Glossary</a> · <a href="../RESOURCES.md">Resources</a> · <a href="../MISSION.md">Mission</a></li>
+  </ul>
+</nav>
+
+</div>
+</body>
+</html>

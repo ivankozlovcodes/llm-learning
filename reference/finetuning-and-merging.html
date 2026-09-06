@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reference · Fine-Tuning and Merging</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<style>
+  /* Reference docs are denser than lessons: two columns in print, tighter rhythm. */
+  .page { max-width: 50rem; padding-top: 3rem; }
+  .ref-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 2.4rem; }
+  @media (max-width: 720px) { .ref-grid { grid-template-columns: 1fr; } }
+  .ref-grid h2:first-child { margin-top: 1.5rem; }
+  .rule-card { border: 1px solid var(--rule); border-radius: 5px; padding: 0.9rem 1.1rem; margin-bottom: 0.8rem; font-size: 0.92rem; }
+  .rule-card .n { font-family: var(--mono); font-weight: 700; color: var(--accent); }
+  @media print { .page { padding-top: 0; } h2 { margin-top: 1.6rem; } body { font-size: 9.5pt; } }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Reference · Local LLM Fluency</p>
+  <h1>Fine-Tuning &amp; Merging</h1>
+  <p class="standfirst">Memory arithmetic, the mlx-lm flag map, and the merge methods worth knowing
+  by name. Sized against an 8 GB Mac. Print it.</p>
+  <div class="meta">
+    <span>Established in <a href="../lessons/0016-fine-tuning-and-soup.html">Lesson 16</a></span>
+    <span>Pairs with <a href="napkin-math.html">Napkin Math</a> · <a href="../GLOSSARY.md">Glossary</a></span>
+  </div>
+</header>
+
+<h2>Decide first: should you?</h2>
+
+<div class="rule-card"><span class="n">No</span> — valid JSON, a persona, knowledge of your files,
+stray tokens before a call. Grammar, system prompt, and retrieval do these better and for free.</div>
+<div class="rule-card"><span class="n">Yes</span> — <em>which</em> tool to call, <em>when</em> to
+stop, matching a bigger model on one narrow job you can demonstrate a thousand times.</div>
+<div class="rule-card"><span class="n">Rule</span> — build the held-out eval set <em>before</em>
+training. Without it you cannot tell whether the fine-tune helped, and you cannot make a soup.</div>
+
+<h2>The four terms</h2>
+
+<div class="formula">
+  <span class="cap">peak training memory</span>
+  base weights <span class="op">+</span> gradients <span class="op">+</span> optimizer state <span class="op">+</span> activations
+</div>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Term</th><th>Scales with</th><th class="num">Size</th><th>Lever</th></tr></thead>
+  <tbody>
+    <tr><td>Base weights</td><td>total params × bpw</td><td class="num">params × 0.563 at 4-bit</td><td>Quantize the base (QLoRA)</td></tr>
+    <tr><td>Gradients</td><td><em>trainable</em> params</td><td class="num">2 B/param (bf16)</td><td>LoRA</td></tr>
+    <tr><td>Optimizer state</td><td><em>trainable</em> params</td><td class="num">4 B/param (AdamW m + v)</td><td>LoRA</td></tr>
+    <tr><td>Activations</td><td>batch × seq × layers × hidden</td><td class="num">≈ seq × h × 34 B per trained layer</td><td>Batch, seq length, <code>--grad-checkpoint</code></td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Whole training state (params + grads + both moments) is <strong>8 bytes per trainable
+parameter</strong> in MLX, <strong>16</strong> in PyTorch mixed precision. The activation figure is
+an order-of-magnitude estimate, good to about ±2×.</p>
+
+<h2>Bytes per parameter</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Base precision</th><th class="num">Bytes/param</th><th class="num">Qwen3-1.7B</th><th class="num">Qwen3-4B</th></tr></thead>
+  <tbody>
+    <tr><td>bf16</td><td class="num">2.000</td><td class="num">3.441 GB</td><td class="num">8.04 GB</td></tr>
+    <tr><td>8-bit</td><td class="num">1.063</td><td class="num">1.828 GB</td><td class="num">4.27 GB</td></tr>
+    <tr><td>4-bit</td><td class="num">0.563</td><td class="num">0.968 GB</td><td class="num">2.263 GB</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Constants derived from measured <code>mlx-community</code> safetensors sizes; they reproduce Qwen3-0.6B (0.335 GB) and Qwen3-4B (2.263 GB) exactly. Same effective bpw as GGUF's F16 / Q8_0 / Q4_K_M — see <a href="napkin-math.html">Napkin Math</a>.</span>
+
+<h2>LoRA parameter count</h2>
+
+<div class="formula">
+  <span class="cap">per adapted matrix</span>
+  rank <span class="op">×</span> (fan_in <span class="op">+</span> fan_out)
+  <span class="cap">× number of tuned layers</span>
+</div>
+
+<p>Worked, Qwen3-1.7B at mlx-lm defaults (rank 8, <code>q_proj</code> + <code>v_proj</code>, 16
+layers, hidden 2048, 16 query heads, 8 KV heads):</p>
+
+<div class="formula mono-block">
+q_proj  8 × (2048 + 2048) = 32,768<br>
+v_proj  8 × (2048 + 1024) = 24,576<br>
+(32,768 + 24,576) × 16    = <span class="num">917,504</span>  →  0.053% of 1.72B  →  7 MB of state
+</div>
+
+<h2>mlx-lm flag map</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Flag</th><th class="num">Default</th><th>Effect</th></tr></thead>
+  <tbody>
+    <tr><td><code>--model &lt;…-4bit&gt;</code></td><td class="num">bf16</td><td>Switches to QLoRA automatically. Biggest single win.</td></tr>
+    <tr><td><code>--batch-size</code></td><td class="num">4</td><td>Activations, linearly</td></tr>
+    <tr><td><code>--num-layers</code></td><td class="num">16</td><td>Activations <em>and</em> trainable state</td></tr>
+    <tr><td><code>--max-seq-length</code></td><td class="num">2048</td><td>Activations, linearly</td></tr>
+    <tr><td><code>--grad-checkpoint</code></td><td class="num">off</td><td>Activations → boundaries only; costs an extra forward pass</td></tr>
+    <tr><td><code>--grad-accumulation-steps</code></td><td class="num">1</td><td>Larger effective batch at no memory cost</td></tr>
+    <tr><td><code>--mask-prompt</code></td><td class="num">off</td><td>Loss on the completion only. No memory effect; better training signal.</td></tr>
+    <tr><td><code>--fine-tune-type</code></td><td class="num">lora</td><td><code>lora</code> · <code>dora</code> · <code>full</code></td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Defaults from <a href="https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/examples/lora_config.yaml">lora_config.yaml</a>; lever ordering from <a href="https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/LORA.md#memory-issues">LORA.md § Memory Issues</a>. LoRA rank, scale and target keys are config-file-only, under <code>lora_parameters</code>.</span>
+
+<h2>Dataset shapes</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Shape</th><th>Keys</th><th>Use for</th></tr></thead>
+  <tbody>
+    <tr><td><code>chat</code></td><td><code>messages[]</code></td><td>General conversation behaviour</td></tr>
+    <tr><td><code>tools</code></td><td><code>messages[]</code> + <code>tools[]</code></td><td>Tool selection. Renders through the model's own chat template.</td></tr>
+    <tr><td><code>completions</code></td><td><code>prompt</code>, <code>completion</code></td><td>Fixed input → output mappings</td></tr>
+    <tr><td><code>text</code></td><td><code>text</code></td><td>You assemble the string yourself</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Files are <code>train.jsonl</code>, <code>valid.jsonl</code> (optional), <code>test.jsonl</code>.
+One example per line, never split across lines. The shape is detected automatically from the keys.</p>
+
+<h2>The commands</h2>
+
+<div class="formula mono-block">
+pip install "mlx-lm[train]"<br><br>
+mlx_lm.lora --model mlx-community/Qwen3-1.7B-4bit --train --data ./data \<br>
+&nbsp;&nbsp;--batch-size 1 --num-layers 8 --max-seq-length 1024 --mask-prompt \<br>
+&nbsp;&nbsp;--iters 300 --adapter-path ./adapters-a<br><br>
+mlx_lm.lora --model … --adapter-path ./adapters-a --data ./data --test<br>
+mlx_lm.generate --model … --adapter-path ./adapters-a --prompt "…"<br>
+mlx_lm.fuse --model … --adapter-path ./adapters-a --save-path ./fused-a<br><br>
+mergekit-yaml merge.yml ./soup --lazy-unpickle
+</div>
+
+<h2>Souping</h2>
+
+<div class="rule-card"><span class="n">Precondition</span> — every ingredient fine-tuned from the
+<em>same</em> base checkpoint. Fine-tunes of one checkpoint lie in a single low-error basin;
+independently pretrained models do not, and average to noise.</div>
+<div class="rule-card"><span class="n">Greedy &gt; uniform</span> — sort runs by held-out score, best
+first; add each only if the soup's score does not fall. Can be no worse than the best single run.</div>
+<div class="rule-card"><span class="n">Cost</span> — zero at inference. One model, original size.
+This is why soup is available on 4.2 GB and ensembling is not.</div>
+<div class="rule-card"><span class="n">Trap</span> — averaging LoRA <code>A</code> and <code>B</code>
+separately gives ¼(B₁A₁ + B₁A₂ + B₂A₁ + B₂A₂): half signal, half noise. Concatenate the factors
+(PEFT <code>combination_type="cat"</code>, rank doubles), use <code>svd</code>, or fuse each adapter
+into a full model first and average those.</div>
+
+<h2>Merge methods</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Name</th><th>mergekit</th><th>Reach for it when</th></tr></thead>
+  <tbody>
+    <tr><td>Model soup</td><td><code>linear</code></td><td>Several runs of the <em>same</em> job. Your default.</td></tr>
+    <tr><td>SLERP</td><td><code>slerp</code></td><td>Exactly two models, and you want the arc rather than the chord</td></tr>
+    <tr><td>Task arithmetic</td><td><code>task_arithmetic</code></td><td>You want to scale or subtract a behaviour</td></tr>
+    <tr><td>TIES</td><td><code>ties</code></td><td>Different tasks that interfere. Trims + resolves sign conflicts.</td></tr>
+    <tr><td>DARE</td><td><code>dare_ties</code></td><td>Many task vectors; drops most of each delta and rescales</td></tr>
+    <tr><td>Model stock</td><td><code>model_stock</code></td><td>Geometric weighting instead of a hand-picked one</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Names and one-line descriptions from the <a href="https://github.com/arcee-ai/mergekit">mergekit README</a>. mergekit is out-of-core with lazy tensor loading and runs on CPU or "as little as 8 GB of VRAM".</span>
+
+<h2>Sources</h2>
+
+<ul>
+  <li><a href="https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/LORA.md">mlx-lm — Fine-Tuning with LoRA or QLoRA</a> — the tool's own documentation</li>
+  <li><a href="https://arxiv.org/abs/2106.09685">LoRA (arXiv 2106.09685)</a> · <a href="https://arxiv.org/abs/2305.14314">QLoRA (arXiv 2305.14314)</a></li>
+  <li><a href="https://arxiv.org/abs/2405.09673">LoRA Learns Less and Forgets Less (arXiv 2405.09673)</a></li>
+  <li><a href="https://arxiv.org/abs/2203.05482">Model soups (arXiv 2203.05482)</a></li>
+  <li><a href="https://arxiv.org/abs/2212.04089">Task arithmetic (2212.04089)</a> · <a href="https://arxiv.org/abs/2306.01708">TIES (2306.01708)</a> · <a href="https://arxiv.org/abs/2311.03099">DARE (2311.03099)</a></li>
+  <li><a href="https://github.com/arcee-ai/mergekit">mergekit</a> · <a href="https://huggingface.co/docs/peft/en/developer_guides/model_merging">PEFT model merging</a></li>
+</ul>
+
+<nav class="footer-nav">
+  <strong>Workspace</strong>
+  <ul>
+    <li><a href="../index.html">Workspace index</a> · <a href="napkin-math.html">Napkin Math</a></li>
+    <li><a href="../lessons/0016-fine-tuning-and-soup.html">Lesson 16 · Fine-Tuning and Soup</a></li>
+    <li><a href="../GLOSSARY.md">Glossary</a> · <a href="../RESOURCES.md">Resources</a> · <a href="../MISSION.md">Mission</a></li>
+  </ul>
+</nav>
+
+</div>
+</body>
+</html>

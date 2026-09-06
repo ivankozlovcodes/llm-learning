@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Local LLM Fluency — Workspace</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<style>
+  .track-head { font-family: var(--sans); font-size: .68rem; font-weight: 700; letter-spacing: .13em;
+    text-transform: uppercase; color: var(--accent); margin: 2.6rem 0 .9rem; padding-bottom: .4rem;
+    border-bottom: 1px solid var(--rule); }
+  .track-head .sub { font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--ink-faint);
+    font-size: .78rem; margin-left: .6rem; }
+  .card { display: block; border: 1px solid var(--rule); border-radius: 6px; padding: .95rem 1.15rem;
+    margin-bottom: .55rem; text-decoration: none; border-bottom: 1px solid var(--rule);
+    background: var(--paper); transition: border-color .12s, transform .08s; position: relative; }
+  .card:hover { border-color: var(--accent); transform: translateX(2px); }
+  .card .n { font-family: var(--mono); font-size: .72rem; color: var(--ink-faint); }
+  .card .t { font-size: 1.06rem; font-weight: 600; color: var(--ink); display: block; margin: .12rem 0 .25rem; }
+  .card .d { font-family: var(--sans); font-size: .85rem; color: var(--ink-soft); line-height: 1.45; margin: 0; }
+  .card .m { font-family: var(--sans); font-size: .72rem; color: var(--ink-faint); margin-top: .45rem; display: block; }
+  .card .done { position: absolute; top: .9rem; right: 1.1rem; font-size: .95rem; color: var(--good); display: none; }
+  .card.read .done { display: block; }
+  .card.read .t { color: var(--ink-soft); }
+  .tick { position: absolute; top: .8rem; right: 1rem; }
+  .tick input { width: 1rem; height: 1rem; accent-color: var(--good); cursor: pointer; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: .55rem; }
+  @media (max-width: 620px) { .grid2 { grid-template-columns: 1fr; } }
+  .progress { font-family: var(--sans); font-size: .84rem; color: var(--ink-soft); background: var(--paper-alt);
+    border: 1px dashed var(--rule); border-radius: 5px; padding: .8rem 1.1rem; margin: 1.6rem 0 0; }
+  .progress b { color: var(--ink); font-family: var(--mono); }
+  .progress button { font-family: var(--sans); font-size: .74rem; margin-left: .8rem; padding: .25rem .6rem;
+    border: 1px solid var(--rule); border-radius: 4px; background: var(--paper); color: var(--ink-faint); cursor: pointer; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Teaching workspace</p>
+  <h1>Local LLM Fluency</h1>
+  <p class="standfirst">Nineteen lessons on what local inference actually costs, built around
+  harness development for CLI agents. Everything here works offline, on all three machines.</p>
+  <div class="meta">
+    <span><a href="MISSION.md">Mission</a></span>
+    <span><a href="GLOSSARY.md">Glossary</a></span>
+    <span><a href="RESOURCES.md">Resources</a></span>
+    <span><a href="reference/napkin-math.html">Cheat sheet</a></span>
+  </div>
+</header>
+
+<div class="progress" id="prog"></div>
+
+<div class="track-head">Part One · The physics <span class="sub">what inference costs, and why</span></div>
+
+<a class="card" href="lessons/0001-the-bandwidth-rule.html" data-id="1">
+  <span class="tick"><input type="checkbox"></span>
+  <span class="n">Lesson 1</span><span class="t">The Bandwidth Rule</span>
+  <p class="d">Decode speed is memory bandwidth ÷ bytes per token. One division predicts any model on any machine.</p>
+  <span class="m">~12 min · calculator</span></a>
+
+<a class="card" href="lessons/0002-the-cost-of-a-turn.html" data-id="2">
+  <span class="tick"><input type="checkbox"></span>
+  <span class="n">Lesson 2</span><span class="t">The Cost of a Turn</span>
+  <p class="d">Prefill is compute-bound, decode is bandwidth-bound. Prefix cache reuse turns a quadratic session into a linear one.</p>
+  <span class="m">~15 min · agent loop simulator</span></a>
+
+<a class="card" href="lessons/0003-the-cache-has-a-price.html" data-id="3">
+  <span class="tick"><input type="checkbox"></span>
+  <span class="n">Lesson 3</span><span class="t">The Cache Has a Price</span>
+  <p class="d">The KV cache is memory rented by the token. It disqualifies models that look like they fit.</p>
+  <span class="m">~14 min · KV budget calculator</span></a>
+
+<a class="card" href="lessons/0004-the-tops-trap.html" data-id="4">
+  <span class="tick"><input type="checkbox"></span>
+  <span class="n">Lesson 4</span><span class="t">The TOPS Trap</span>
+  <p class="d">Jetson, Pi AI HAT, and why edge devices are marketed on the one number that never binds.</p>
+  <span class="m">~15 min · roofline chart</span></a>
+
+<div class="track-head">Part Two · The model layer <span class="sub">choosing and configuring</span></div>
+
+<a class="card" href="lessons/0005-what-fits-in-8gb.html" data-id="5">
+  <span class="tick"><input type="checkbox"></span>
+  <span class="n">Lesson 5</span><span class="t">What Fits in 8 GB</span>
+  <p class="d">The travel machine, precisely. Your real budget is 4.2 GB, and both candidate models exceed it.</p>
+  <span class="m">~15 min · budget calculator</span></a>
+
+<a class="card" href="lessons/0006-the-quantization-ladder.html" data-id="6">
+  <span class="tick"><input type="checkbox"></span>
+  <span class="n">Lesson 6</span><span class="t">The Quantization Ladder</span>
+  <p class="d">Recall survives, reasoning breaks. Plus what "1-bit" really measures — 1.81 bits, as it happens.</p>
+  <span class="m">~20 min · quality explorer</span></a>
+
+<a class="card" href="lessons/0007-templates-and-sampling.html" data-id="7">
+  <span class="tick"><input type="checkbox"></span>
+  <span class="n">Lesson 7</span><span class="t">Templates and Sampling</span>
+  <p class="d">The two invisible layers between your JSON and the model's tokens. Both fail silently.</p>
+  <span class="m">~18 min · sampler explorer</span></a>
+
+<a class="card" href="lessons/0008-tool-calling.html" data-id="8">
+  <span class="tick"><input type="checkbox"></span>
+  <span class="n">Lesson 8</span><span class="t">Tool Calling</span>
+  <p class="d">Make malformed output unrepresentable rather than merely unlikely. Grammars guarantee syntax, never judgement.</p>
+  <span class="m">~20 min</span></a>
+
+<div class="track-head">Part Three · The harness <span class="sub">designing pi plugins against real costs — grouped by topic, not by number</span></div>
+
+<a class="card" href="lessons/0009-anatomy-of-a-turn.html" data-id="9">
+  <span class="tick"><input type="checkbox"></span>
+  <span class="n">Lesson 9</span><span class="t">Anatomy of a Turn</span>
+  <p class="d">Every cost so far, mapped onto pi's real pipeline, hooks and events.</p>
+  <span class="m">~15 min</span></a>
+
+<a class="card" href="lessons/0017-input-and-output-tokens.html" data-id="17">
+  <span class="tick"><input type="checkbox"></span>
+  <span class="n">Lesson 17</span><span class="t">Input and Output Tokens</span>
+  <p class="d">How a token gets counted, why output costs 8× more, and why your agent produces so few of them.</p>
+  <span class="m">~20 min · token meter</span></a>
+
+<a class="card" href="lessons/0018-the-context-window.html" data-id="18">
+  <span class="tick"><input type="checkbox"></span>
+  <span class="n">Lesson 18</span><span class="t">The Context Window</span>
+  <p class="d">What fills it before you type, why order decides cache reuse, and the second ceiling nobody prints.</p>
+  <span class="m">~22 min · context budget</span></a>
+
+<a class="card" href="lessons/0010-tool-design.html" data-id="10">
+  <span class="tick"><input type="checkbox"></span>
+  <span class="n">Lesson 10</span><span class="t">Tool Design for Local Models</span>
+  <p class="d">Every tool is paid for twice — in permanent context, and in decision load on a weak model.</p>
+  <span class="m">~18 min</span></a>
+
+<a class="card" href="lessons/0011-compaction-policy.html" data-id="11">
+  <span class="tick"><input type="checkbox"></span>
+  <span class="n">Lesson 11</span><span class="t">Designing a Compaction Policy</span>
+  <p class="d">The flagship. Compute the threshold instead of guessing, and end with a spec you could implement.</p>
+  <span class="m">~25 min · policy simulator</span></a>
+
+<a class="card" href="lessons/0019-embeddings-and-retrieval.html" data-id="19">
+  <span class="tick"><input type="checkbox"></span>
+  <span class="n">Lesson 19</span><span class="t">Embeddings and Retrieval</span>
+  <p class="d">Pure prefill, no decode. Which WeMM size fits 4.2 GB, and the free 8× that Matryoshka gives you.</p>
+  <span class="m">~22 min · vector store calculator</span></a>
+
+<a class="card" href="lessons/0012-multi-model-routing.html" data-id="12">
+  <span class="tick"><input type="checkbox"></span>
+  <span class="n">Lesson 12</span><span class="t">Multi-Model Routing</span>
+  <p class="d">Routing is not about cheaper turns. It is about keeping expensive work off the main context.</p>
+  <span class="m">~18 min</span></a>
+
+<a class="card" href="lessons/0013-subagents-and-batching.html" data-id="13">
+  <span class="tick"><input type="checkbox"></span>
+  <span class="n">Lesson 13</span><span class="t">Sub-agents and Batching</span>
+  <p class="d">Two ways to beat the bandwidth rule, both by getting more than one token per weight read.</p>
+  <span class="m">~20 min · roofline chart</span></a>
+
+<div class="track-head">Part Four · Staying current <span class="sub">lower cognitive load — good for late in a flight</span></div>
+
+<div class="grid2">
+<a class="card" href="lessons/0014-reading-a-model-card.html" data-id="14">
+  <span class="tick"><input type="checkbox"></span>
+  <span class="n">Lesson 14</span><span class="t">Reading a Model Card</span>
+  <p class="d">A six-step pass that never trusts the README.</p>
+  <span class="m">~12 min</span></a>
+
+<a class="card" href="lessons/0015-the-landscape.html" data-id="15">
+  <span class="tick"><input type="checkbox"></span>
+  <span class="n">Lesson 15</span><span class="t">The Landscape</span>
+  <p class="d">September 2026, and the shifts that outlast the names.</p>
+  <span class="m">~20 min</span></a>
+</div>
+
+<div class="track-head">Part Five · Changing the model <span class="sub">when configuration runs out</span></div>
+
+<div class="grid2">
+<a class="card" href="lessons/0016-fine-tuning-and-soup.html" data-id="16">
+  <span class="tick"><input type="checkbox"></span>
+  <span class="n">Lesson 16</span><span class="t">Fine-Tuning and Soup</span>
+  <p class="d">Four terms of training memory, a QLoRA run that fits in 4.2 GB, and why averaging beats choosing.</p>
+  <span class="m">~22 min · training budget calculator</span></a>
+</div>
+
+<div class="track-head">Reference</div>
+
+<div class="grid2">
+<a class="card" href="reference/napkin-math.html">
+  <span class="n">Reference</span><span class="t">Napkin Math</span>
+  <p class="d">Every formula, constant and rule of thumb. Printable.</p></a>
+<a class="card" href="reference/three-machines.html">
+  <span class="n">Reference</span><span class="t">Three Machines</span>
+  <p class="d">The 48 GB M4 alongside the 8 GB M1 and the 64 GB at home. What each one changes. Printable.</p></a>
+<a class="card" href="reference/finetuning-and-merging.html">
+  <span class="n">Reference</span><span class="t">Fine-Tuning &amp; Merging</span>
+  <p class="d">Training memory arithmetic, the mlx-lm flag map, merge methods. Printable.</p></a>
+<a class="card" href="GLOSSARY.md">
+  <span class="n">Reference</span><span class="t">Glossary</span>
+  <p class="d">Canonical terms, with the synonyms to avoid.</p></a>
+<a class="card" href="RESOURCES.md">
+  <span class="n">Reference</span><span class="t">Resources</span>
+  <p class="d">Trusted sources behind every claim, plus known gaps.</p></a>
+<a class="card" href="MISSION.md">
+  <span class="n">Reference</span><span class="t">Mission</span>
+  <p class="d">Why this workspace exists and what is out of scope.</p></a>
+</div>
+
+<div class="ask" style="margin-top:2.6rem">
+  <strong>Ask your teacher anything.</strong> Every lesson ends with suggested questions. The most
+  valuable ones are usually about your own code — bring a tool schema, a transcript, or a config and
+  we will work on it directly.
+</div>
+
+</div>
+<script>
+(function () {
+  'use strict';
+  var KEY = 'llm-workspace-read';
+  var read = {};
+  try { read = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) { read = {}; }
+
+  function save() { try { localStorage.setItem(KEY, JSON.stringify(read)); } catch (e) {} }
+
+  function paint() {
+    var total = 0, done = 0;
+    document.querySelectorAll('.card[data-id]').forEach(function (c) {
+      total++;
+      var on = !!read[c.dataset.id];
+      if (on) done++;
+      c.classList.toggle('read', on);
+      var box = c.querySelector('input');
+      if (box) box.checked = on;
+    });
+    var p = document.getElementById('prog');
+    p.innerHTML = done === 0
+      ? 'Nothing marked read yet. Tick a lesson as you finish it — progress is stored in this browser only.'
+      : '<b>' + done + ' / ' + total + '</b> lessons marked read.' +
+        (done === total ? ' All of it. Come back with questions about your own harness.' : '') +
+        '<button id="reset">reset</button>';
+    var r = document.getElementById('reset');
+    if (r) r.onclick = function () { read = {}; save(); paint(); };
+  }
+
+  document.querySelectorAll('.card[data-id] input').forEach(function (box) {
+    box.addEventListener('click', function (e) { e.stopPropagation(); });
+    box.addEventListener('change', function (e) {
+      e.stopPropagation();
+      var id = box.closest('.card').dataset.id;
+      if (box.checked) read[id] = 1; else delete read[id];
+      save(); paint();
+    });
+  });
+  document.querySelectorAll('.card .tick').forEach(function (t) {
+    t.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); });
+  });
+  paint();
+})();
+</script>
+</body>
+</html>

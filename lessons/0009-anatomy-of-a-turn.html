@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 9 · Anatomy of a Turn</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<div class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 9 · Local LLM Fluency</p>
+  <h1>Anatomy of a Turn</h1>
+  <p class="standfirst">Eight lessons of costs, laid over pi's actual architecture. Every number you
+  have learned lands somewhere specific in this pipeline.</p>
+  <div class="meta">
+    <span>~15 minutes</span>
+    <span>Prerequisites: <a href="0002-the-cost-of-a-turn.html">2</a>, <a href="0008-tool-calling.html">8</a></span>
+    <span><a href="../MISSION.md">Mission</a> · <a href="../GLOSSARY.md">Glossary</a></span>
+  </div>
+</header>
+
+<p>Lesson 2 modelled a turn abstractly: prefill plus decode. pi has a real pipeline with real
+extension points, and the costs attach to specific stages. Once you can see which stage owns which
+cost, plugin design stops being guesswork.</p>
+
+<div class="keystone">
+  <span class="label">The one idea</span>
+  <p>pi's context pipeline is<br>
+  <code>AgentMessage[] → transformContext() → convertToLlm() → Message[] → LLM</code></p>
+  <p><strong><code>transformContext()</code> is where your KV cache lives or dies.</strong> It is
+  the hook that prunes and compacts — which means it is the hook that rewrites the prefix. Every
+  other cost in this workspace is downstream of what happens there.</p>
+</div>
+
+<h2>The pipeline</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Stage</th><th>What it does</th><th>Cost it owns</th></tr></thead>
+  <tbody>
+    <tr><td><code>AgentMessage[]</code></td><td>pi's own history: <code>user</code>, <code>assistant</code>, <code>toolResult</code>, plus custom types</td><td>None — bookkeeping</td></tr>
+    <tr><td><strong><code>transformContext()</code></strong></td><td>Prune or compact before the call</td><td><strong>Cache validity.</strong> Change anything early and the prefix is invalidated</td></tr>
+    <tr><td><code>convertToLlm()</code></td><td>Map to provider message format</td><td>None</td></tr>
+    <tr><td>Chat template</td><td>Messages + tools → tokens (Lesson 7)</td><td>Silent failure if wrong</td></tr>
+    <tr><td>Prefill</td><td>Ingest the new tokens</td><td><strong>Time to first token</strong> (Lesson 2)</td></tr>
+    <tr><td>Decode</td><td>Generate the reply</td><td><strong>Bandwidth-bound</strong> (Lesson 1)</td></tr>
+    <tr><td>Tool execution</td><td>Run the call, append the result</td><td>Wall clock, plus tokens added to context</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Pipeline and type names from the <a href="https://github.com/earendil-works/pi/blob/main/packages/agent/README.md">pi agent runtime README</a>.</span>
+
+<h2>The event timeline</h2>
+
+<p>pi emits events you can subscribe to. Mapped against the physics:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Event</th><th>What is happening underneath</th></tr></thead>
+  <tbody>
+    <tr><td><code>agent_start</code></td><td>Loop begins</td></tr>
+    <tr><td><code>turn_start</code></td><td><code>transformContext()</code> has run; the prompt is assembled</td></tr>
+    <tr><td><code>message_start</code></td><td><strong>Prefill is finishing.</strong> The gap before this is your TTFT</td></tr>
+    <tr><td><code>message_update</code></td><td>Decode, one delta at a time. Rate = the Lesson 1 number</td></tr>
+    <tr><td><code>message_end</code></td><td>Generation complete</td></tr>
+    <tr><td><code>tool_execution_start</code> / <code>_end</code></td><td>Your code. Whatever it returns becomes next turn's prefill</td></tr>
+    <tr><td><code>turn_end</code></td><td><code>shouldStopAfterTurn</code> decides whether to loop</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The gap between <code>turn_start</code> and <code>message_start</code> <em>is</em> prefill. If you
+want to know whether your cache reuse is working, that interval is the measurement — no profiler
+needed. Cached, it should be roughly constant per turn. Uncached, it grows every turn, and you are
+watching Lesson 2's quadratic curve in real time.</p>
+
+<h2>The four hooks, priced</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Hook</th><th>Fires</th><th>What it costs you</th></tr></thead>
+  <tbody>
+    <tr><td><code>transformContext</code></td><td>Before every LLM call</td><td><strong>Everything.</strong> Touch the prefix and the next turn pays full uncached prefill</td></tr>
+    <tr><td><code>beforeToolCall</code></td><td>Before execution; can <code>{ block: true }</code></td><td>Nearly free — and it can save a whole turn</td></tr>
+    <tr><td><code>afterToolCall</code></td><td>After execution; can override the result</td><td>Free in compute; costs context if it enlarges the result</td></tr>
+    <tr><td><code>shouldStopAfterTurn</code></td><td>After each turn</td><td>Free. Stopping early saves an entire prefill+decode cycle</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <span class="tag">The asymmetry worth exploiting</span>
+  <p><code>beforeToolCall</code> is the cheapest place in the whole loop to catch a mistake. Blocking
+  a bad call there costs microseconds. Letting it execute, fail, and be corrected by the model costs
+  a full turn — on the 8 GB machine, about 70 seconds. Validation you can express in code should
+  never be delegated to the model.</p>
+</div>
+
+<h2>Tool results are next turn's prefill</h2>
+
+<p>This is the fact that reframes tool design. Whatever <code>execute()</code> returns is appended
+to the conversation, so it is prefilled on <em>every subsequent turn</em> — and with prefix caching,
+it is the bulk of what you pay for on the turn it arrives.</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Tool returns</th><th>Tokens</th><th>Prefill on M1 8 GB (~40 t/s)</th><th>Then, every later turn</th></tr></thead>
+  <tbody>
+    <tr><td>A 20-line diff</td><td>~250</td><td>6 s</td><td>Cached — free</td></tr>
+    <tr><td>A whole 600-line file</td><td>~8,000</td><td>200 s</td><td>Cached, but 1.1 GB of KV forever</td></tr>
+    <tr><td>Unfiltered command output</td><td>~30,000</td><td>12 min</td><td>Blows the 8 GB budget entirely</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>A tool that returns too much does not just cost one slow turn — it permanently occupies KV cache
+for the rest of the session. On a machine with 1.7 GB of cache headroom, one careless
+<code>cat</code> ends the conversation.</p>
+
+<h2>Parallel tools are batching</h2>
+
+<p>pi's <code>executionMode</code> defaults to <code>"parallel"</code>: preflight sequentially, then
+execute concurrently. For your own code that is ordinary concurrency. But if a tool is itself an LLM
+call — a sub-agent — then several in flight at once is exactly the <strong>batching</strong> case
+deferred back in Lesson 2, where the Spark went from 20.5 to 368 tok/s of decode throughput.</p>
+
+<p>On a bandwidth-bound machine, running four sub-agents concurrently costs far less than four times
+one. <a href="0013-subagents-and-batching.html">Lesson 13</a> does that arithmetic properly.</p>
+
+<h2>Where every lesson lands</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Lesson</th><th>Attaches to</th></tr></thead>
+  <tbody>
+    <tr><td>1 · Bandwidth rule</td><td>Rate of <code>message_update</code> events</td></tr>
+    <tr><td>2 · Prefill and cache reuse</td><td>Gap from <code>turn_start</code> to <code>message_start</code></td></tr>
+    <tr><td>3 · KV cache memory</td><td>Total context — grows with every tool result</td></tr>
+    <tr><td>5 · The 8 GB budget</td><td>Hard ceiling on how long a session can run</td></tr>
+    <tr><td>6 · Quantization</td><td>Whether the model picks the right tool</td></tr>
+    <tr><td>7 · Templates and sampling</td><td>Whether tools reach the model at all</td></tr>
+    <tr><td>8 · Constrained decoding</td><td>Whether the call parses</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <span class="qnum">Question 1</span>
+  <p class="q">Which pi hook determines whether prefix cache reuse survives?</p>
+  <div class="options">
+    <button class="opt" data-correct>transformContext, before calls</button>
+    <button class="opt">beforeToolCall, blocking calls</button>
+    <button class="opt">afterToolCall, overriding results</button>
+    <button class="opt">shouldStopAfterTurn, ending loops</button>
+  </div>
+  <div class="explain">
+    <strong><code>transformContext</code>.</strong> It runs before every LLM call and is where
+    pruning and compaction happen. Any edit to an earlier message changes the prefix, so the cached
+    keys and values no longer correspond to it and the next turn re-prefills from scratch.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 2</span>
+  <p class="q">You want to measure whether cache reuse is working. What do you time?</p>
+  <div class="options">
+    <button class="opt" data-correct>turn_start to message_start</button>
+    <button class="opt">message_start to message_end</button>
+    <button class="opt">agent_start to agent_end</button>
+    <button class="opt">tool_execution_start to end</button>
+  </div>
+  <div class="explain">
+    <strong><code>turn_start</code> → <code>message_start</code>.</strong> That interval is prefill.
+    Roughly constant per turn means the cache is being reused; growing every turn means it is not,
+    and you are watching a quadratic session unfold.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 3</span>
+  <p class="q">A tool returns an entire 600-line file. What is the lasting cost?</p>
+  <div class="options">
+    <button class="opt" data-correct>Permanent KV cache occupancy</button>
+    <button class="opt">One slow turn only</button>
+    <button class="opt">Reduced decode throughput</button>
+    <button class="opt">Nothing, it gets cached</button>
+  </div>
+  <div class="explain">
+    <strong>Permanent cache occupancy.</strong> One expensive prefill, then ~8,000 tokens sit in the
+    KV cache for the rest of the session — about 1.1 GB on Qwen3-4B. Caching makes it free in
+    <em>time</em> and permanently expensive in <em>memory</em>, which on 8 GB is the binding
+    constraint.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 4</span>
+  <p class="q">You can validate a tool argument in code. Where should that check live?</p>
+  <div class="options">
+    <button class="opt" data-correct>In beforeToolCall, blocking</button>
+    <button class="opt">In the system prompt instructions</button>
+    <button class="opt">In the tool's JSON schema</button>
+    <button class="opt">In the model's error recovery</button>
+  </div>
+  <div class="explain">
+    <strong><code>beforeToolCall</code>, blocking.</strong> It costs microseconds. Letting the call
+    run, fail, and be corrected by the model costs a full prefill-plus-decode cycle. Schemas catch
+    shape but cannot check that a path exists; prompt instructions are advisory and degrade with
+    quantization.
+  </div>
+</div>
+
+<div class="scoreboard" data-scoreboard></div>
+
+<div class="ask">
+  <strong>Your teacher is one message away.</strong> Worth asking: "how do I subscribe to pi events
+  from an extension?", "what does a minimal pi extension look like?", or "how do I log TTFT per
+  turn?"
+</div>
+
+<nav class="footer-nav">
+  <strong>Workspace</strong>
+  <ul>
+    <li><a href="0008-tool-calling.html">Lesson 8 · Tool Calling</a></li>
+    <li><a href="0010-tool-design.html">Lesson 10 · Tool Design for Local Models</a></li>
+    <li><a href="0011-compaction-policy.html">Lesson 11 · Designing a Compaction Policy</a></li>
+    <li><a href="../GLOSSARY.md">Glossary</a> · <a href="../RESOURCES.md">Resources</a> · <a href="../MISSION.md">Mission</a></li>
+  </ul>
+</nav>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

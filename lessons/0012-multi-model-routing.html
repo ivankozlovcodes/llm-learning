@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 12 · Multi-Model Routing</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<div class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 12 · Local LLM Fluency</p>
+  <h1>Multi-Model Routing</h1>
+  <p class="standfirst">You own two machines and a dozen models. A harness that uses one of each is
+  leaving most of the capability on the table.</p>
+  <div class="meta">
+    <span>~18 minutes</span>
+    <span>Prerequisites: <a href="0009-anatomy-of-a-turn.html">9</a>, <a href="0011-compaction-policy.html">11</a></span>
+    <span><a href="../MISSION.md">Mission</a> · <a href="../GLOSSARY.md">Glossary</a></span>
+  </div>
+</header>
+
+<p>Every lesson so far has asked "which model?" as if the answer had to be one. It does not. A
+harness controls the model selection on every single call, and the turns in an agent loop are wildly
+unequal in difficulty.</p>
+
+<div class="keystone">
+  <span class="label">The one idea</span>
+  <p>Most turns in an agent session are <strong>mechanical</strong> — acknowledge a tool result,
+  pick the obvious next step, summarise. A few are <strong>hard</strong>. Routing sends each to a
+  model sized for it.</p>
+  <p>The gain is not marginal. A 4B at 18 tok/s versus a 32B at 13 tok/s is a modest speed
+  difference; a 4B on the small machine versus a 30B-A3B on the big one is a <em>capability</em>
+  difference you can spend selectively.</p>
+</div>
+
+<h2>What pi gives you</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Mechanism</th><th>Use</th></tr></thead>
+  <tbody>
+    <tr><td><code>~/.pi/agent/models.json</code></td><td>Register any OpenAI-compatible endpoint as a provider</td></tr>
+    <tr><td><code>/login llama.cpp</code>, <code>/llama</code>, <code>/model</code></td><td>Manage and switch loaded models interactively</td></tr>
+    <tr><td><code>agent.state.model</code></td><td>The active model — readable and settable from an extension</td></tr>
+    <tr><td><code>session_before_compact</code></td><td>Swap in a cheap model just for summarisation</td></tr>
+    <tr><td>Sub-agents via <code>registerTool</code></td><td>A tool that is itself an agent, with its own model</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Everything routing needs is already exposed. The design question is <em>when</em> to switch, not
+whether you can.</p>
+
+<h2>Four routing patterns</h2>
+
+<h3>1. Summariser split</h3>
+<p>The easiest win and the one Lesson 11 pointed at. Compaction summaries do not need your best
+model. Route <code>session_before_compact</code> to a small fast model and the compaction spike
+shrinks — you still pay the prefix invalidation, but not the round trip on a large model.</p>
+
+<h3>2. Escalation</h3>
+<p>Start every turn on the small model. Escalate to the large one when a signal fires: the small
+model asked for help, produced a malformed call twice, or the turn involves multi-file reasoning.
+Cheap by default, expensive on demand.</p>
+
+<div class="sidenote">
+  <strong>The catch:</strong> escalating mid-session means the large model has no KV cache for this
+  conversation. The escalated turn pays full uncached prefill on the entire context — Lesson 2's
+  penalty, again. Escalation is worth it for genuinely hard turns and ruinous if it fires every
+  third turn.
+</div>
+
+<h3>3. Sub-agent delegation</h3>
+<p>A tool that spawns its own agent with its own model and its own context. The parent's context
+grows by only the sub-agent's <em>result</em>, not its whole working history — so a sub-agent that
+reads twenty files returns a summary and the parent never carries those tokens. This is the strongest
+pattern for context conservation, and it composes with parallel execution.</p>
+
+<h3>4. Machine split</h3>
+<p>You have a 64 GB machine and an 8 GB machine. Point pi at both as separate providers. The
+travel laptop becomes a summariser and classifier; the desktop runs the main loop. It also works in
+reverse — on the plane, the 8 GB machine runs the loop and there is no fallback, which is the
+scenario Lesson 5 sized.</p>
+
+<h2>The routing decision, priced</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Turn type</th><th>Route to</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>Acknowledge a tool result, continue</td><td>Small</td><td>Near-zero reasoning depth</td></tr>
+    <tr><td>Summarise for compaction</td><td>Small</td><td>Compression, not judgement</td></tr>
+    <tr><td>Classify or route a request</td><td>Small</td><td>One decision, constrained output</td></tr>
+    <tr><td>Choose among 15 tools</td><td>Large</td><td>Reasoning curve — Lesson 6</td></tr>
+    <tr><td>Multi-file refactor plan</td><td>Large</td><td>Long chain, compounding errors</td></tr>
+    <tr><td>Recover from repeated failure</td><td>Large</td><td>The small model already demonstrated it cannot</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <span class="tag">The rule that keeps routing honest</span>
+  <p>Every switch costs a full uncached prefill on the target model. So route on <strong>stable
+  boundaries</strong> — a whole sub-agent task, a whole compaction — rather than per turn. A router
+  that flips models frequently spends more on cold prefills than it saves in decode. Routing is a
+  <em>coarse</em> optimisation; treating it as a fine one inverts the benefit.</p>
+</div>
+
+<h2>Worked example</h2>
+
+<p>A 40-turn session: 32 mechanical turns, 8 hard ones, 3 compactions.</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Strategy</th><th>Mechanical</th><th>Hard</th><th>Compactions</th><th class="num">Quality</th></tr></thead>
+  <tbody>
+    <tr><td>All small (4B)</td><td>Fast</td><td><strong>Fails some</strong></td><td>Fast</td><td class="num">Poor</td></tr>
+    <tr><td>All large (30B-A3B)</td><td>Fine</td><td>Good</td><td>Wasteful</td><td class="num">Good</td></tr>
+    <tr><td>Per-turn routing</td><td>Fast</td><td>Good</td><td>Fast</td><td class="num">Good, but 8 cold prefills</td></tr>
+    <tr><td><strong>Coarse routing</strong></td><td>Large (cache warm)</td><td>Large</td><td><strong>Small</strong></td><td class="num"><strong>Good, 3 cold prefills</strong></td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The counter-intuitive winner: keep the <em>main loop</em> on the large model to preserve its warm
+cache, and route only the off-path work — summarisation, sub-agents, classification — to the small
+one. Routing the main loop back and forth destroys the thing that makes the main loop cheap.</p>
+
+<p>Which reframes the whole lesson. <strong>Routing is not about making cheap turns cheaper. It is
+about keeping expensive work off the main context.</strong></p>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <span class="qnum">Question 1</span>
+  <p class="q">What does switching models mid-session cost?</p>
+  <div class="options">
+    <button class="opt" data-correct>A full uncached prefill</button>
+    <button class="opt">Only the model load time</button>
+    <button class="opt">Nothing, context transfers</button>
+    <button class="opt">Reduced decode throughput</button>
+  </div>
+  <div class="explain">
+    <strong>A full uncached prefill.</strong> KV caches are per-model — the target has never seen
+    this conversation, so the entire context is prefilled from scratch. This is why routing must
+    happen on coarse boundaries rather than per turn.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 2</span>
+  <p class="q">Which routing pattern conserves the parent's context best?</p>
+  <div class="options">
+    <button class="opt" data-correct>Sub-agent with own context</button>
+    <button class="opt">Per-turn model escalation</button>
+    <button class="opt">Summariser model split</button>
+    <button class="opt">Machine-based provider split</button>
+  </div>
+  <div class="explain">
+    <strong>Sub-agents.</strong> The sub-agent's working history lives in its own context; the parent
+    receives only the result. A sub-agent that reads twenty files adds a paragraph to the parent
+    rather than twenty files' worth of tokens — directly attacking the KV growth from Lesson 3.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 3</span>
+  <p class="q">Given a large and a small model, where should the main agent loop run?</p>
+  <div class="options">
+    <button class="opt" data-correct>Large, keeping cache warm</button>
+    <button class="opt">Small, escalating when stuck</button>
+    <button class="opt">Alternating by turn difficulty</button>
+    <button class="opt">Whichever has free memory</button>
+  </div>
+  <div class="explain">
+    <strong>Large, keeping its cache warm.</strong> The main loop is where prefix reuse pays off, so
+    it should stay put. Route the off-path work — summarisation, sub-agents, classification — to the
+    small model. Bouncing the main loop between models destroys the reuse that makes it cheap.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 4</span>
+  <p class="q">What is routing actually optimising?</p>
+  <div class="options">
+    <button class="opt" data-correct>Keeping work off-context</button>
+    <button class="opt">Making cheap turns cheaper</button>
+    <button class="opt">Reducing total memory use</button>
+    <button class="opt">Improving tool call accuracy</button>
+  </div>
+  <div class="explain">
+    <strong>Keeping expensive work off the main context.</strong> The decode saving from a smaller
+    model is real but modest; the win is that delegated work never enters the parent's context, so it
+    never occupies KV cache or gets re-prefilled. Frame it that way and the design decisions follow.
+  </div>
+</div>
+
+<div class="scoreboard" data-scoreboard></div>
+
+<div class="ask">
+  <strong>Your teacher is one message away.</strong> Worth asking: "how do I add my desktop as a
+  provider in models.json?", "what does a sub-agent tool look like in pi?", or "what signals should
+  trigger escalation?"
+</div>
+
+<div class="addendum">
+  <span class="label">Addendum · the 48 GB M4</span>
+  <span class="when">Added 2026-09-05 — the lesson above stands as written; this is what a third machine changes.</span>
+  <p>This lesson assumed routing meant choosing between a small local model and something larger
+  elsewhere. With a <strong>48 GB M4</strong> on the trip, two things change.</p>
+  <p><strong>First, routing becomes available away from home.</strong> The M4 runs
+  Ornith-1.5-35B-A3B at an estimated 103–205 tok/s depending on whether it is a Pro or a Max — so
+  the "expensive" tier in every routing pattern here is now in your bag rather than on the far side
+  of a network you may not have.</p>
+  <p><strong>Second, a pattern this lesson could not offer before: the M4 serves the M1.</strong>
+  Run <code>llama-server</code> on the M4 and point pi on the 8 GB machine at it over the local
+  network — the same OpenAI-compatible endpoint you would configure in
+  <code>~/.pi/agent/models.json</code> for any other provider. The 8 GB machine keeps its 4 GB model
+  for offline work and borrows a 35B when both laptops are on the same Wi-Fi. Neither machine has to
+  compromise.</p>
+  <p>The trade is the one this lesson already priced: a network hop adds latency to every turn, and
+  the KV cache lives on the server, so cache reuse now depends on <em>one</em> client not
+  invalidating another's prefix. With a single user that is a non-issue. See <a href="../reference/three-machines.html">Three Machines</a>.</p>
+</div>
+
+<nav class="footer-nav">
+  <strong>Workspace</strong>
+  <ul>
+    <li><a href="0011-compaction-policy.html">Lesson 11 · Designing a Compaction Policy</a></li>
+    <li><a href="0013-subagents-and-batching.html">Lesson 13 · Sub-agents and Batching</a></li>
+    <li><a href="../GLOSSARY.md">Glossary</a> · <a href="../RESOURCES.md">Resources</a> · <a href="../MISSION.md">Mission</a></li>
+  </ul>
+</nav>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

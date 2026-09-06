@@ -1,0 +1,41 @@
+/* ============================================================
+   Sampler explorer. Shows how temperature, top-k, top-p and
+   min-p reshape a next-token distribution.
+   Depends on custom properties from lesson.css.
+   ============================================================ */
+.samp { border: 1px solid var(--rule); border-radius: 6px; margin: 2.2rem 0;
+        background: var(--paper-alt); overflow: hidden; }
+.samp header { padding: 1rem 1.4rem 0.85rem; border-bottom: 1px solid var(--rule); }
+.samp header .tag { font-family: var(--sans); font-size: .66rem; font-weight: 700; letter-spacing: .13em;
+  text-transform: uppercase; color: var(--accent); display: block; margin-bottom: .3rem; }
+.samp header .sub { font-family: var(--sans); font-size: .84rem; color: var(--ink-soft); margin: 0; }
+
+.samp .controls { display: grid; grid-template-columns: repeat(4, 1fr); gap: .9rem 1.2rem; padding: 1.2rem 1.4rem; }
+@media (max-width: 620px) { .samp .controls { grid-template-columns: repeat(2, 1fr); } }
+.samp .field { display: flex; flex-direction: column; gap: .3rem; }
+.samp label { font-family: var(--sans); font-size: .66rem; font-weight: 600; letter-spacing: .07em;
+  text-transform: uppercase; color: var(--ink-faint); display: flex; justify-content: space-between; }
+.samp label .v { font-family: var(--mono); color: var(--accent); }
+.samp input[type=range] { width: 100%; accent-color: var(--accent); }
+
+.samp .presets { display: flex; gap: .4rem; padding: 0 1.4rem 1.1rem; flex-wrap: wrap; }
+.samp .presets button { font-family: var(--sans); font-size: .74rem; font-weight: 600; padding: .35rem .7rem;
+  border: 1px solid var(--rule); border-radius: 4px; background: var(--paper); color: var(--ink-soft); cursor: pointer; }
+.samp .presets button:hover { border-color: var(--accent); color: var(--accent); }
+
+.samp .bars { padding: 1.1rem 1.4rem; background: var(--paper); border-top: 1px solid var(--rule); }
+.samp .row { display: grid; grid-template-columns: 6.5rem 1fr 3.4rem; align-items: center; gap: .6rem; margin-bottom: .3rem; }
+.samp .tok { font-family: var(--mono); font-size: .78rem; color: var(--ink); text-align: right; white-space: nowrap; overflow: hidden; }
+.samp .track { height: 15px; background: var(--paper-alt); border-radius: 2px; overflow: hidden; }
+.samp .fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width .12s; }
+.samp .pct { font-family: var(--mono); font-size: .72rem; color: var(--ink-soft); text-align: right; font-variant-numeric: tabular-nums; }
+.samp .row.cut .tok, .samp .row.cut .pct { color: var(--ink-faint); text-decoration: line-through; }
+.samp .row.cut .fill { background: var(--rule); }
+
+.samp .verdict { font-family: var(--sans); font-size: .87rem; line-height: 1.5; margin: 1rem 1.4rem 1.2rem;
+  padding: .7rem .95rem; border-radius: 4px; }
+.samp .verdict.ok { background: var(--good-soft); color: var(--good); }
+.samp .verdict.warn { background: var(--accent-soft); color: var(--accent); }
+.samp footer { font-family: var(--sans); font-size: .74rem; color: var(--ink-faint);
+  padding: .8rem 1.4rem; border-top: 1px solid var(--rule); line-height: 1.5; }
+@media print { .samp .controls, .samp .presets, .samp footer { display: none; } }

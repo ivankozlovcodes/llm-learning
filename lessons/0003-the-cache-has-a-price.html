@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 3 · The Cache Has a Price</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+<link rel="stylesheet" href="../assets/calc.css">
+</head>
+<body>
+<div class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 3 · Local LLM Hardware</p>
+  <h1>The Cache Has a Price</h1>
+  <p class="standfirst">Prefix cache reuse was free in compute. It is not free in memory — and the
+  bill arrives exactly where your model budget already hurts.</p>
+  <div class="meta">
+    <span>~14 minutes</span>
+    <span>Prerequisite: <a href="0002-the-cost-of-a-turn.html">Lesson 2</a></span>
+    <span><a href="../MISSION.md">Mission</a> · <a href="../GLOSSARY.md">Glossary</a> · <a href="../reference/napkin-math.html">Cheat sheet</a></span>
+  </div>
+</header>
+
+<p>Lesson 2 ended on a win: keep the KV cache between turns and a quadratic session collapses to a
+linear one. Lesson 1's calculator quietly assumed that cache did not exist. Both cannot be true, and
+this lesson is where the two meet.</p>
+
+<div class="keystone">
+  <span class="label">The one idea</span>
+  <p>The KV cache is <strong>memory you rent by the token</strong>. It grows linearly with context
+  length, it lives in the same pool as the weights, and on a long-context agent workload it is not
+  a rounding error — it is frequently <strong>a quarter of your entire budget</strong>.</p>
+  <p>Which means context length is a <em>model selection</em> constraint, not just a setting.</p>
+</div>
+
+<h2>What the cache actually is</h2>
+
+<p>Attention needs the key and value vectors for every previous token. Recomputing them each step
+would be quadratic, so they are computed once and kept. That store is the KV cache, and its size is
+fully determined by the model's architecture:</p>
+
+<div class="formula">
+  bytes per token  =  2  ×  layers  ×  kv-heads  ×  head-dim  ×  bytes per element
+  <span class="cap">the leading 2 is for K and V · nothing here depends on parameter count</span>
+</div>
+
+<p>Note what is <em>absent</em>: parameter count. Two models of the same size can have wildly
+different cache appetites, and the model card will not tell you — you have to read
+<code>config.json</code>.</p>
+
+<h3>Grouped-query attention is why this is survivable</h3>
+
+<p>Llama 3.3 70B has 64 attention heads but only <strong>8 key/value heads</strong>. Queries stay
+plentiful; keys and values are shared across groups. Since only KV heads appear in the formula, GQA
+cuts the cache by 8× against classic multi-head attention. Without it, the numbers below would put
+long-context local inference out of reach entirely.</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Model</th><th class="num">Layers</th><th class="num">KV heads</th><th class="num">Head dim</th><th class="num">KV per token</th></tr></thead>
+  <tbody>
+    <tr><td>Llama 3.1 8B</td><td class="num">32</td><td class="num">8</td><td class="num">128</td><td class="num">128 KB</td></tr>
+    <tr><td>Mistral Small 24B</td><td class="num">40</td><td class="num">8</td><td class="num">128</td><td class="num">160 KB</td></tr>
+    <tr><td>Qwen3-30B-A3B</td><td class="num">48</td><td class="num">4</td><td class="num">128</td><td class="num">96 KB</td></tr>
+    <tr><td>Qwen3 32B</td><td class="num">64</td><td class="num">8</td><td class="num">128</td><td class="num">256 KB</td></tr>
+    <tr><td>Llama 3.3 70B</td><td class="num">80</td><td class="num">8</td><td class="num">128</td><td class="num">320 KB</td></tr>
+    <tr><td>gpt-oss-120b</td><td class="num">36</td><td class="num">8</td><td class="num">64</td><td class="num">72 KB</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Geometry read from each model's published <code>config.json</code> on Hugging Face. F16 cache. Note that Qwen3-30B-A3B needs <em>less</em> cache than the 8B model, and gpt-oss-120b less still.</span>
+
+<h2>The number that changes your buy decision</h2>
+
+<div class="reveal">
+  <span class="tag">Predict before you look</span>
+  <p class="prompt">Your 25-turn agent session from Lesson 2 reached ~42,000 tokens. On the M1 Max
+  you were planning to run Llama 70B at Q4_K_M — <strong>43.2 GB</strong> of weights against
+  <strong>~48 GB</strong> of usable memory. Add the cache. Does the session survive?</p>
+  <button class="show-answer">Reveal</button>
+  <div class="answer">
+    <p>320 KB × 42,000 = <strong>13.8 GB of cache</strong>. Plus 43.2 GB of weights =
+    <strong>57.0 GB</strong>, against 48 GB available.</p>
+    <p><strong>It does not fit — by 9 GB.</strong> Raising the wired limit to ~56 GB still does not
+    save it. The 70B model you have been pricing this whole time cannot hold a long agent
+    conversation on a 64 GB Mac, at any quantization that keeps it worth running.</p>
+  </div>
+</div>
+
+<p>This is the failure that gets misdiagnosed as slowness. The model loads, short chats work fine,
+and then somewhere around turn fifteen the machine starts swapping and throughput falls off a
+cliff. Nothing is misconfigured; you simply budgeted for the weights and not the cache.</p>
+
+<h2>Price your own setup</h2>
+
+<div class="calc" data-kvcalc data-model="l70b" data-machine="m1max48"></div>
+
+<h2>So what should actually run on that machine?</h2>
+
+<p>Same 42k context, same ~48 GB budget, Q4_K_M throughout. Decode speed from Lesson 1's bandwidth
+rule at 400 GB/s.</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Model</th><th class="num">Weights</th><th class="num">Cache @42k</th><th class="num">Total</th><th class="num">Decode</th><th>Verdict</th></tr></thead>
+  <tbody>
+    <tr><td>Llama 3.3 70B</td><td class="num">43.2</td><td class="num">13.8</td><td class="num">57.0</td><td class="num">~7 t/s</td><td>Does not fit</td></tr>
+    <tr><td>Qwen3 32B</td><td class="num">20.1</td><td class="num">11.0</td><td class="num">31.1</td><td class="num">~13 t/s</td><td>Fits, slow</td></tr>
+    <tr><td>Mistral Small 24B</td><td class="num">14.5</td><td class="num">6.9</td><td class="num">21.3</td><td class="num">~18 t/s</td><td>Comfortable</td></tr>
+    <tr><td><strong>Qwen3-30B-A3B</strong></td><td class="num">18.7</td><td class="num">4.1</td><td class="num">22.8</td><td class="num"><strong>~80–100 t/s</strong></td><td><strong>The answer</strong></td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="keystone">
+  <span class="label">Three lessons converging</span>
+  <p>Qwen3-30B-A3B wins on every axis at once, and each axis came from a different lesson.
+  <strong>Lesson 1:</strong> it is MoE, so only ~3.3B parameters are read per token — decode is an
+  order of magnitude faster than any dense model here. <strong>Lesson 2:</strong> that speed is what
+  a cache-reusing harness converts directly into turn latency. <strong>Lesson 3:</strong> just 4 KV
+  heads means the smallest cache in the table.</p>
+  <p>You would never find this by shopping on parameter count. "30B" looks worse than "70B" on
+  every spec sheet and model leaderboard, and is dramatically the better choice for your workload
+  on your hardware.</p>
+</div>
+
+<div class="note">
+  <span class="tag">Updated in Lesson 15</span>
+  <p>A better model has since arrived that satisfies these same criteria harder:
+  <strong>Ornith-1.5-35B-A3B</strong> — ~3B active, only <em>2</em> KV heads (80 KB per token
+  against Qwen3-30B-A3B's 96), MIT licensed. The reasoning on this page is unchanged; the winner
+  is. See <a href="0015-the-landscape.html">Lesson 15</a>.</p>
+</div>
+
+<h3>The other lever: quantize the cache</h3>
+
+<p>The cache is just numbers, and it can be stored at reduced precision like the weights.
+In llama.cpp: <code>--cache-type-k q8_0 --cache-type-v q8_0</code> halves it. Llama 70B's 13.8 GB
+becomes 6.9 GB, bringing the total to 50.1 GB — still over 48, but now within reach of a raised
+wired limit. Quality cost is small at Q8 and becomes real at Q4. Try it in the calculator above.</p>
+
+<h2>Where this lands in pi</h2>
+
+<p>pi handles context exhaustion with <strong>compaction</strong> — summarising older messages
+while keeping recent ones, automatically or via <code>/compact</code>. You can now see exactly what
+that does, and it cuts both ways:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Compaction</th><th>Effect</th></tr></thead>
+  <tbody>
+    <tr><td>Frees KV cache memory</td><td>Good — the whole problem in this lesson</td></tr>
+    <tr><td>Rewrites the conversation prefix</td><td>Bad — invalidates prefix cache reuse from that point</td></tr>
+    <tr><td>Next turn after compaction</td><td>Pays full uncached prefill on the new, shorter context</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>So compaction is a <strong>priced trade</strong>, not a free cleanup: you buy memory with one
+expensive turn. And because pi lets extensions implement custom compaction, this is a decision you
+can own rather than inherit. A compaction that fires at 90% of budget and cuts deeply costs one
+slow turn rarely. One that trims a little every few turns keeps memory flat and destroys your cache
+continuously. Same feature, opposite performance characteristics.</p>
+
+<div class="note">
+  <span class="tag">Worth building</span>
+  <p>The napkin work for a compaction plugin is now fully in your hands: cache bytes per token from
+  this lesson, prefill rate from Lesson 2, decode rate from Lesson 1. That is enough to compute the
+  optimal compaction threshold for a given model and machine, rather than guessing at it.</p>
+</div>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <span class="qnum">Question 1</span>
+  <p class="q">How does KV cache size scale?</p>
+  <div class="options">
+    <button class="opt" data-correct>Context length, linearly</button>
+    <button class="opt">Context length, quadratically</button>
+    <button class="opt">Model parameters, linearly</button>
+    <button class="opt">Output length, only</button>
+  </div>
+  <div class="explain">
+    <strong>Linearly with context length.</strong> Every token contributes a fixed number of bytes,
+    set by the architecture. Parameter count does not appear in the formula at all — which is why a
+    30B model can need less cache than an 8B one.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 2</span>
+  <p class="q">Llama 70B Q4 is 43.2 GB of weights, plus a 13.8 GB cache at 42k context, on a machine with 48 GB usable. What is the outcome?</p>
+  <div class="options">
+    <button class="opt" data-correct>No, 9 GB over</button>
+    <button class="opt">Yes, 5 GB spare</button>
+    <button class="opt">Yes, 14 GB spare</button>
+    <button class="opt">No, 22 GB over</button>
+  </div>
+  <div class="explain">
+    <strong>Over by 9 GB.</strong> 43.2 + 13.8 = 57.0 against 48. The 5 GB of apparent headroom you
+    had when counting weights alone was an illusion created by ignoring the cache — and it evaporates
+    at around 15k tokens of context.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 3</span>
+  <p class="q">Grouped-query attention shrinks the KV cache by reducing which quantity?</p>
+  <div class="options">
+    <button class="opt" data-correct>Key/value head count</button>
+    <button class="opt">Transformer layer count</button>
+    <button class="opt">Attention head count</button>
+    <button class="opt">Head dimension size</button>
+  </div>
+  <div class="explain">
+    <strong>Key/value head count.</strong> The distractor matters: GQA keeps all 64 <em>query</em>
+    heads on Llama 70B and shares just 8 sets of keys and values between them. Query heads cost
+    compute; only KV heads cost cache.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 4</span>
+  <p class="q">pi's compaction summarises older messages to reclaim context. What does that cost?</p>
+  <div class="options">
+    <button class="opt" data-correct>Prefix cache validity</button>
+    <button class="opt">Total context capacity</button>
+    <button class="opt">Decode throughput permanently</button>
+    <button class="opt">Nothing, it's free</button>
+  </div>
+  <div class="explain">
+    <strong>Prefix cache validity.</strong> Rewriting the early conversation changes the prefix, so
+    the cached keys and values no longer correspond to it. The following turn re-prefills from
+    scratch. The effect is one expensive turn, not a permanent slowdown — which is precisely why
+    compaction should be rare and deep rather than frequent and shallow.
+  </div>
+</div>
+
+<div class="scoreboard" data-scoreboard></div>
+
+<h2>The capacity picture is now complete</h2>
+
+<p>Three lessons, three costs, and you can price any model on any machine from published specs
+alone: weights from parameter count and quantization, cache from architecture and context, speed
+from bandwidth and active parameters. Everything the buy decision needs is assembled.</p>
+
+<p>Which is exactly why the next lesson is <strong>hands-on measurement</strong>. Every number in
+this workspace is either sourced from someone else's benchmark or derived on a napkin. Before that
+becomes a purchase, you should watch the predictions succeed or fail against hardware you can touch.
+Lesson 4 installs llama.cpp, runs <code>llama-bench</code>, and checks the model.</p>
+
+<div class="source">
+  <span class="tag">Read this next</span>
+  <span class="title">Transformer Inference Arithmetic — kipply</span>
+  <p>Derives KV cache capacity from first principles, including where the leading factor of 2 comes
+  from and how cache size trades against batch size. The section on capacity is the direct source
+  for this lesson's formula, and it goes further than we did.</p>
+  <p style="margin-top:0.6rem"><a href="https://kipp.ly/transformer-inference-arithmetic/">kipp.ly/transformer-inference-arithmetic/</a></p>
+</div>
+
+<div class="ask">
+  <strong>Your teacher is one message away.</strong> Good questions from here: "how do I check
+  <code>config.json</code> for a model I'm considering?", "what does KV cache quantization actually
+  cost in quality?", or "what would an optimal compaction policy look like for Qwen3-30B-A3B on the
+  M1 Max?" — that last one is a plugin you could write.
+</div>
+
+<nav class="footer-nav">
+  <strong>Workspace</strong>
+  <ul>
+    <li><a href="0001-the-bandwidth-rule.html">Lesson 1 · The Bandwidth Rule</a></li>
+    <li><a href="0002-the-cost-of-a-turn.html">Lesson 2 · The Cost of a Turn</a></li>
+    <li><a href="0004-the-tops-trap.html">Lesson 4 · The TOPS Trap</a> — micro PCs, Jetson, and why TOPS misleads</li>
+    <li><a href="../reference/napkin-math.html">Reference · Napkin math cheat sheet</a></li>
+    <li><a href="../GLOSSARY.md">Glossary</a> · <a href="../RESOURCES.md">Resources</a> · <a href="../MISSION.md">Mission</a></li>
+  </ul>
+</nav>
+
+</div>
+<script src="../assets/quiz.js"></script>
+<script src="../assets/kvcalc.js"></script>
+</body>
+</html>

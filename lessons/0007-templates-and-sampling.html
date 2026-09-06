@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 7 · Templates and Sampling</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+<link rel="stylesheet" href="../assets/sampler.css">
+</head>
+<body>
+<div class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 7 · Local LLM Fluency</p>
+  <h1>Templates and Sampling</h1>
+  <p class="standfirst">The two layers between your JSON and the model's tokens. Both are invisible
+  when they work, and both produce failures that look like the model being stupid.</p>
+  <div class="meta">
+    <span>~18 minutes</span>
+    <span>Prerequisite: <a href="0006-the-quantization-ladder.html">Lesson 6</a></span>
+    <span><a href="../MISSION.md">Mission</a> · <a href="../GLOSSARY.md">Glossary</a></span>
+  </div>
+</header>
+
+<p>Everything up to here has been physics — bytes, bandwidth, memory. This lesson is the first that
+is purely about <em>plumbing</em>, and it is where most people lose their first weekend to local
+models.</p>
+
+<div class="keystone">
+  <span class="label">The one idea</span>
+  <p>A model is not just weights. It is weights <strong>plus the exact token sequence it was
+  trained to expect</strong>. Get that sequence subtly wrong and the model still answers — worse,
+  and with no error anywhere.</p>
+  <p>Silent degradation is the defining failure mode of local inference. Nothing crashes. The model
+  just seems dumber than the benchmarks promised.</p>
+</div>
+
+<h2>Layer one: the chat template</h2>
+
+<p>You send <code>[{role: "user", content: "hi"}]</code>. The model has never seen JSON. Something
+must convert your messages into the literal string the model was fine-tuned on — special tokens,
+role markers, whitespace and all. That something is the <strong>chat template</strong>, a Jinja
+program shipped inside the GGUF's metadata.</p>
+
+<div class="formula">
+  messages (JSON)  →  <span class="num">chat template</span>  →  token sequence  →  model
+  <span class="cap">every model family has its own · they are not interchangeable</span>
+</div>
+
+<p>llama.cpp has two layers of support: a built-in dispatcher that recognises well-known formats,
+and a full Jinja engine that executes whatever template the model actually ships. The second is what
+you want, and on the server it is behind a flag:</p>
+
+<div class="formula">llama-server -m model.gguf <span class="num">--jinja</span></div>
+
+<p>Without it you get llama.cpp's best guess at a matching built-in template. Usually close.
+Occasionally close enough to work and wrong enough to hurt.</p>
+<span class="cite">Source: <a href="https://deepwiki.com/ggml-org/llama.cpp/3.9-chat-templates-and-message-parsing">llama.cpp chat templates and message parsing</a>.</span>
+
+<h3>The four ways this breaks</h3>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Fault</th><th>Symptom</th><th>Fix</th></tr></thead>
+  <tbody>
+    <tr><td>Wrong template applied</td><td>Coherent but noticeably worse; ignores the system prompt</td><td><code>--jinja</code>, or set the template explicitly</td></tr>
+    <tr><td>Doubled BOS token</td><td>Subtly degraded from the first token onward</td><td>Don't add BOS yourself if the template already does</td></tr>
+    <tr><td>Missing or wrong stop tokens</td><td>Model answers, then keeps going — inventing the next turn</td><td>Check the GGUF's EOS metadata; add explicit stops</td></tr>
+    <tr><td>Tools not in the template</td><td>Tool definitions silently dropped; model never calls anything</td><td>Requires a tool-aware template — Lesson 8</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <span class="tag">"It works in LM Studio but not through the API"</span>
+  <p>This is almost always template-related. The GUI applies the model's own template; your raw
+  <code>/completion</code> call does not. Either use the <code>/v1/chat/completions</code> endpoint
+  and let the server template for you, or reproduce the template exactly. Sending pre-formatted text
+  to a chat endpoint double-applies it — which is its own distinct bug.</p>
+</div>
+
+<h2>Layer two: sampling</h2>
+
+<p>The model outputs a probability distribution over every token in its vocabulary. Sampling is how
+one token is chosen from it — and the parameters are the ones that get copy-pasted between projects
+with no thought at all.</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Parameter</th><th>Does</th><th>Increase to</th></tr></thead>
+  <tbody>
+    <tr><td><code>temperature</code></td><td>Flattens or sharpens the whole distribution</td><td>Get more variety; 0 means always take the top token</td></tr>
+    <tr><td><code>top_k</code></td><td>Keeps only the k most likely tokens</td><td>Allow a wider field</td></tr>
+    <tr><td><code>top_p</code></td><td>Keeps the smallest set whose probability sums to p</td><td>Allow a wider field, adaptively</td></tr>
+    <tr><td><code>min_p</code></td><td>Drops tokens below a fraction of the top token's probability</td><td>Cut harder when the model is confident</td></tr>
+    <tr><td><code>repetition_penalty</code></td><td>Down-weights tokens already produced</td><td>Break loops — at some cost to correctness</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Order matters, and it is not the order they appear in your config file. llama.cpp filters
+<strong>top-k, then top-p, then min-p, then applies temperature</strong> to whatever survived.
+Temperature comes last, so raising it cannot resurrect a token top-p already discarded — a
+surprisingly common misunderstanding.</p>
+
+<div class="samp" data-sampler></div>
+
+<h2>The rule for agent work</h2>
+
+<p>Play with the preset buttons above and watch the bottom line change. At Qwen3's recommended chat
+settings the tool call is likely. At temperature 0 it is certain.</p>
+
+<div class="keystone">
+  <span class="label">For tool calling and structured output, use temperature 0</span>
+  <p>Sampling diversity is a <strong>creative-writing lever</strong>. In an agent harness you do not
+  want creative variety in the shape of a function call — you want the same input to produce the
+  same call, every time, so that failures are reproducible.</p>
+  <p>The default settings shipped with every model are tuned for chat. They are the wrong defaults
+  for a harness, and nothing warns you.</p>
+</div>
+
+<p>Vendor recommendations, for reference — note that all of them are chat-oriented:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Mode</th><th class="num">temp</th><th class="num">top_p</th><th class="num">top_k</th><th class="num">min_p</th></tr></thead>
+  <tbody>
+    <tr><td>Qwen3 general</td><td class="num">0.7</td><td class="num">0.80</td><td class="num">20</td><td class="num">0.0</td></tr>
+    <tr><td>Qwen3 thinking / precise code</td><td class="num">0.6</td><td class="num">0.95</td><td class="num">20</td><td class="num">0.0</td></tr>
+    <tr><td><strong>Tool calling (any model)</strong></td><td class="num"><strong>0.0</strong></td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Qwen figures from Qwen's own deployment documentation. The tool-calling row is the practical consensus, not a vendor recommendation.</span>
+
+<div class="sidenote">
+  <strong>On min-p:</strong> it truncates relative to the top token's probability rather than at a
+  fixed cumulative mass, so it adapts to how confident the model is. It was widely promoted, then a
+  2025 re-analysis found its headline gains sensitive to hyperparameter tuning. Useful, not magic —
+  and irrelevant at temperature 0, where nothing is being sampled anyway.
+</div>
+
+<h2>A diagnostic order</h2>
+
+<p>When a local model underperforms, work down this list before concluding the model is bad:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>#</th><th>Check</th><th>Because</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>Is it swapping? (Lesson 5)</td><td>Explains slowness, not wrongness — rule it out first</td></tr>
+    <tr><td>2</td><td>Is the right chat template applied?</td><td>The single most common cause of "this model is dumb"</td></tr>
+    <tr><td>3</td><td>Are BOS and stop tokens correct?</td><td>Causes rambling and subtle degradation</td></tr>
+    <tr><td>4</td><td>Is temperature 0 for structured work?</td><td>Turns intermittent failures into reproducible ones</td></tr>
+    <tr><td>5</td><td>Is the quantization above 4 bits? (Lesson 6)</td><td>Reasoning fails before recall does</td></tr>
+    <tr><td>6</td><td><em>Now</em> consider a different model</td><td>By here you are actually testing the model</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Steps 2 through 4 are free and take minutes. Most people skip straight to step 6 and download a
+bigger model, which costs bandwidth and memory to fix a problem that was never about capability.</p>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <span class="qnum">Question 1</span>
+  <p class="q">A model gives coherent but noticeably poor answers and ignores the system prompt. Most likely cause?</p>
+  <div class="options">
+    <button class="opt" data-correct>Wrong chat template</button>
+    <button class="opt">Insufficient memory bandwidth</button>
+    <button class="opt">Temperature set too high</button>
+    <button class="opt">Context window exceeded</button>
+  </div>
+  <div class="explain">
+    <strong>Wrong chat template.</strong> Coherent-but-degraded plus a disregarded system prompt is
+    the signature: the role markers the model was trained on are not where it expects them, so it
+    treats the system message as ordinary text. Bandwidth affects speed, never quality.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 2</span>
+  <p class="q">In llama.cpp's default sampler chain, when is temperature applied?</p>
+  <div class="options">
+    <button class="opt" data-correct>Last, after the filters</button>
+    <button class="opt">First, before the filters</button>
+    <button class="opt">Between top-k and top-p</button>
+    <button class="opt">Only when top-p is disabled</button>
+  </div>
+  <div class="explain">
+    <strong>Last.</strong> The order is top-k, top-p, min-p, then temperature. Because it comes
+    last, temperature reshapes only the surviving candidates — raising it cannot bring back a token
+    that top-p already cut. People frequently expect the opposite.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 3</span>
+  <p class="q">What temperature should an agent harness use for tool calls?</p>
+  <div class="options">
+    <button class="opt" data-correct>Zero, always greedy</button>
+    <button class="opt">The vendor recommendation</button>
+    <button class="opt">Around zero point seven</button>
+    <button class="opt">Whatever the model defaults</button>
+  </div>
+  <div class="explain">
+    <strong>Zero.</strong> Variety in the shape of a function call has no upside and makes failures
+    non-reproducible. Vendor settings — Qwen3's 0.7/0.80/20 — are tuned for chat, and inheriting
+    them in a harness is a choice you did not know you were making.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 4</span>
+  <p class="q">A model answers correctly, then keeps writing — inventing the next user turn. What is wrong?</p>
+  <div class="options">
+    <button class="opt" data-correct>Stop tokens are wrong</button>
+    <button class="opt">Repetition penalty too low</button>
+    <button class="opt">The context is full</button>
+    <button class="opt">Quantization is too aggressive</button>
+  </div>
+  <div class="explain">
+    <strong>Stop tokens.</strong> The model emitted its end-of-turn marker and nobody was listening,
+    so generation continued into what the template told it comes next — another turn. Check the
+    GGUF's EOS metadata against what your client is passing as stop strings.
+  </div>
+</div>
+
+<div class="scoreboard" data-scoreboard></div>
+
+<h2>Next</h2>
+
+<p>Temperature 0 makes a tool call <em>likely</em>. It does not make it <em>well-formed</em> — a
+greedy model can still emit confident, perfectly deterministic malformed JSON.
+<a href="0008-tool-calling.html">Lesson 8</a> is about making that structurally impossible rather
+than merely improbable.</p>
+
+<div class="ask">
+  <strong>Your teacher is one message away.</strong> Worth asking: "how do I inspect the chat
+  template inside a GGUF?", "what does pi send as its system prompt?", or "should repetition penalty
+  ever be on for agent work?"
+</div>
+
+<nav class="footer-nav">
+  <strong>Workspace</strong>
+  <ul>
+    <li><a href="0006-the-quantization-ladder.html">Lesson 6 · The Quantization Ladder</a></li>
+    <li><a href="0005-what-fits-in-8gb.html">Lesson 5 · What Fits in 8 GB</a></li>
+    <li><a href="../reference/napkin-math.html">Reference · Napkin math cheat sheet</a></li>
+    <li><a href="../GLOSSARY.md">Glossary</a> · <a href="../RESOURCES.md">Resources</a> · <a href="../MISSION.md">Mission</a></li>
+  </ul>
+</nav>
+
+</div>
+<script src="../assets/quiz.js"></script>
+<script src="../assets/sampler.js"></script>
+</body>
+</html>

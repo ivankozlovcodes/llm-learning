@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 4 · The TOPS Trap</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+<link rel="stylesheet" href="../assets/calc.css">
+<link rel="stylesheet" href="../assets/roofline.css">
+</head>
+<body>
+<div class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 4 · Local LLM Hardware</p>
+  <h1>The TOPS Trap</h1>
+  <p class="standfirst">Jetson Nanos, Pi AI HATs, and every $250 box sold as an AI computer. The
+  number on the label measures a resource your workload never runs out of.</p>
+  <div class="meta">
+    <span>~15 minutes</span>
+    <span>Prerequisites: <a href="0001-the-bandwidth-rule.html">1</a>, <a href="0003-the-cache-has-a-price.html">3</a></span>
+    <span><a href="../MISSION.md">Mission</a> · <a href="../GLOSSARY.md">Glossary</a> · <a href="../reference/napkin-math.html">Cheat sheet</a></span>
+  </div>
+</header>
+
+<p>A Jetson Orin Nano Super is $249 for 67 TOPS. A DGX Spark is $4,699. If TOPS were the thing that
+mattered you could buy eighteen Nanos and beat it. This lesson is about why that arithmetic is a
+trap, and it is the cleanest possible test of whether Lesson 1 actually landed.</p>
+
+<div class="keystone">
+  <span class="label">The one idea</span>
+  <p><strong>TOPS measures compute. Decode never runs out of compute.</strong> On a Jetson Orin
+  Nano, single-stream token generation uses roughly <strong>0.3% of the advertised 40 TOPS</strong>
+  — the other 99.7% is idle, waiting for memory.</p>
+  <p>Edge AI hardware is marketed on the one specification that is least relevant to running a
+  language model.</p>
+</div>
+
+<h2>The cleanest proof: an accessory that cannot do it at all</h2>
+
+<p>Raspberry Pi sells three AI HATs. Their own documentation is unusually blunt about what the
+first two can do:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Accessory</th><th class="num">TOPS</th><th>Own memory</th><th>Runs LLMs?</th></tr></thead>
+  <tbody>
+    <tr><td>AI HAT+ (Hailo-8L)</td><td class="num">13 INT8</td><td>None — uses the Pi's</td><td><strong>Not supported</strong></td></tr>
+    <tr><td>AI HAT+ (Hailo-8)</td><td class="num">26 INT8</td><td>None — uses the Pi's</td><td><strong>Not supported</strong></td></tr>
+    <tr><td>AI HAT+ 2 (Hailo-10H)</td><td class="num">40 INT4</td><td>8 GB onboard</td><td>Yes, up to ~6B params</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Source: <a href="https://www.raspberrypi.com/documentation/accessories/ai-hat-plus.html">Raspberry Pi AI HAT+ documentation</a>.</span>
+
+<p>Doubling the TOPS from 13 to 26 changed nothing — both are vision accelerators that cannot run a
+language model at any size. What unlocked generative AI was <strong>adding 8 GB of onboard
+memory</strong>. The capability boundary tracked memory, not compute, exactly as Lessons 1 and 3
+predict.</p>
+
+<h2>Why the compute goes unused: the roofline</h2>
+
+<p>A machine can never exceed <code>min(peak compute, bandwidth × operational intensity)</code>.
+The bend between those two limits is the <strong>ridge point</strong>, and it sits at:</p>
+
+<div class="formula">
+  ridge  =  peak compute  ÷  memory bandwidth
+  <span class="cap">the operational intensity you must supply before compute becomes the limit</span>
+</div>
+
+<p>For an original Jetson Orin Nano — 40 TOPS, 68 GB/s — that is
+<strong>40 × 10¹² ÷ 68 × 10⁹ = 588 FLOPs per byte</strong>. Decode supplies about
+<strong>2</strong>. You are short by a factor of nearly three hundred, and no amount of tuning
+closes a gap of that shape.</p>
+<span class="cite">This calculation and the measured benchmarks below are from Eric X. Liu, <a href="https://ericxliu.me/posts/benchmarking-llms-on-jetson-orin-nano/">Why Your Jetson Orin Nano's 40 TOPS Goes Unused</a>, which arrives at the same 588 figure independently.</span>
+
+<div class="roofline" data-roofline data-machine="orinnano"></div>
+
+<p>Switch the machine and watch the ridge move. The M1 Max sits at <strong>52</strong> — a balanced
+design, which is why its prefill-to-decode ratio in Lesson 2 was only 9:1. The Jetson AGX Thor sits
+at <strong>7,582</strong>. Every one of these devices is sold on the number that lives to the right
+of its ridge, and every agent workload lives to the left.</p>
+
+<h2>What the small boxes actually deliver</h2>
+
+<p>Measured, on a Jetson Orin Nano at 68 GB/s. Note the model sizes — these are not typos:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Model</th><th>Quant</th><th>Backend</th><th class="num">Decode</th><th class="num">TTFT</th></tr></thead>
+  <tbody>
+    <tr><td>Qwen 3 0.6B</td><td>FP8</td><td>Ollama</td><td class="num">38.8 t/s</td><td class="num">0.52 s</td></tr>
+    <tr><td>Qwen 2.5 0.5B</td><td>Q4_K_M</td><td>Ollama</td><td class="num">35.2 t/s</td><td class="num">1.42 s</td></tr>
+    <tr><td>Gemma 3 1B</td><td>Q4_K_M</td><td>Ollama</td><td class="num">26.3 t/s</td><td class="num">1.00 s</td></tr>
+    <tr><td>Gemma 3n E2B</td><td>Q4_K_M</td><td>Ollama</td><td class="num">9.0 t/s</td><td class="num">2.00 s</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Source: <a href="https://ericxliu.me/posts/benchmarking-llms-on-jetson-orin-nano/">ericxliu.me</a>. A 1B model at 26 t/s on a device advertising 40 TOPS.</span>
+
+<div class="reveal">
+  <span class="tag">Predict before you look</span>
+  <p class="prompt">The Orin Nano <em>Super</em> raised bandwidth to <strong>102 GB/s</strong> and
+  compute to 67 TOPS, for $249. Llama 3.1 8B at Q4_K_M is <strong>4.9 GB</strong> of weights.
+  Ceiling, and realistic?</p>
+  <button class="show-answer">Reveal</button>
+  <div class="answer">
+    <p>102 ÷ 4.9 = <strong>20.8 tok/s ceiling</strong>, so <strong>~13–14 tok/s</strong> realistic.
+    Respectable for $249 and about 25 W.</p>
+    <p>Now notice what did the work: bandwidth went up 50% and so did the token rate. Compute went
+    up 68% and contributed essentially nothing to decode. NVIDIA marketed the "Super" update as a
+    generative AI performance boost, and it was — but through the 102 GB/s, not the 67 TOPS.</p>
+  </div>
+</div>
+
+<h2>Auditing a vendor claim with the rule</h2>
+
+<p>Hailo advertises the 10H running Llama2-7B at <strong>up to 10 tokens/sec under 5 W</strong>.
+Run it backwards: a 7B model at INT4 is roughly 3.5 GB, so 10 tok/s requires
+<strong>~35 GB/s</strong> of achieved bandwidth. The chip carries LPDDR4X-4267, which on a 64-bit
+bus tops out around <strong>34 GB/s</strong>.</p>
+
+<p>So the claim sits exactly at the theoretical ceiling — meaning either it is measured under
+ideal conditions you will not reproduce, or the model is smaller than stated. Either way the
+diagnosis is the same: <strong>the part is bandwidth-limited and the 40 TOPS is decorative.</strong>
+You can now do this to any spec sheet in about fifteen seconds.</p>
+
+<div class="sidenote">
+  <strong>Caveat:</strong> Hailo does not publish the bus width, so the 34 GB/s is inferred from the
+  memory type. Treat it as an estimate — but the conclusion holds across any plausible bus width,
+  which is what makes the technique useful.
+</div>
+
+<h2>The 8 GB wall</h2>
+
+<p>Even taking the Orin Nano Super's ~13 tok/s at face value, Lesson 3 kills it for your workload.
+Of 8 GB, about 6.5 GB is usable. Llama 8B Q4 takes 4.9 GB, leaving <strong>1.6 GB</strong> for the
+KV cache. At 128 KB per token that buys:</p>
+
+<div class="formula">
+  1.6 GB ÷ 128 KB per token  =  <span class="num">~12,000 tokens of context</span>
+  <span class="cap">before the OS takes its share</span>
+</div>
+
+<p>Your Lesson 2 agent session reached 42,000. A CLI coding agent's system prompt, tool definitions
+and a couple of file reads will exhaust 12k before the first interesting turn. Quantizing the KV
+cache to Q8 doubles it to ~24k, which is still not enough.</p>
+
+<div class="calc" data-kvcalc data-model="l8b" data-machine="orinnano"></div>
+
+<h2>The full field</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Device</th><th class="num">Memory</th><th class="num">Bandwidth</th><th class="num">Compute</th><th class="num">Price</th></tr></thead>
+  <tbody>
+    <tr><td>Raspberry Pi 5 (CPU only)</td><td class="num">8–16 GB</td><td class="num">~17 GB/s</td><td class="num">—</td><td class="num">$80–120</td></tr>
+    <tr><td>Pi AI HAT+ 2 (Hailo-10H)</td><td class="num">8 GB</td><td class="num">~34 GB/s</td><td class="num">40 TOPS</td><td class="num">—</td></tr>
+    <tr><td>Jetson Orin Nano Super</td><td class="num">8 GB</td><td class="num">102 GB/s</td><td class="num">67 TOPS</td><td class="num">$249</td></tr>
+    <tr><td>Jetson Orin NX 16 GB</td><td class="num">16 GB</td><td class="num">102 GB/s</td><td class="num">~100 TOPS</td><td class="num">—</td></tr>
+    <tr><td>Mac mini M4</td><td class="num">16–32 GB</td><td class="num">120 GB/s</td><td class="num">—</td><td class="num">$799</td></tr>
+    <tr><td>Jetson AGX Orin 64 GB</td><td class="num">64 GB</td><td class="num">205 GB/s</td><td class="num">275 TOPS</td><td class="num">$1,999 module</td></tr>
+    <tr><td><strong>Mac mini M4 Pro</strong></td><td class="num">24–64 GB</td><td class="num"><strong>273 GB/s</strong></td><td class="num">—</td><td class="num">from $1,599</td></tr>
+    <tr><td>Jetson AGX Thor</td><td class="num">128 GB</td><td class="num">273 GB/s</td><td class="num">2,070 TFLOPS</td><td class="num">$3,499</td></tr>
+    <tr><td>DGX Spark</td><td class="num">128 GB</td><td class="num">273 GB/s</td><td class="num">~1,000 TFLOPS</td><td class="num">$4,699</td></tr>
+    <tr><td><strong>MacBook Pro M1 Max 64 GB</strong></td><td class="num">64 GB</td><td class="num"><strong>400 GB/s</strong></td><td class="num">—</td><td class="num"><strong>$1,000 used</strong></td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="keystone">
+  <span class="label">Read the bandwidth column, top to bottom</span>
+  <p>Three machines sit at exactly <strong>273 GB/s</strong>: the Mac mini M4 Pro from $1,599, the
+  Jetson AGX Thor at $3,499, and the DGX Spark at $4,699. For single-stream decode they are the
+  same machine. You are paying the difference for CUDA, for capacity, and for compute your agent
+  loop will not touch.</p>
+  <p>And the $1,000 used M1 Max still has more bandwidth than any of them.</p>
+</div>
+
+<h2>Where micro PCs genuinely win</h2>
+
+<p>None of this makes them bad hardware — it makes them badly matched to <em>your</em> workload.
+They are excellent at:</p>
+
+<ul>
+  <li><strong>Vision.</strong> CNNs have high operational intensity and small weights. This is what
+  the Hailo parts were designed for and they are superb at it, at a few watts.</li>
+  <li><strong>Small always-on models.</strong> A 0.5–3B model for wake-word handling, classification,
+  routing or embeddings, running 24/7 at 5–25 W instead of a laptop at 90 W.</li>
+  <li><strong>Batched throughput at the edge.</strong> Many concurrent small requests raise
+  operational intensity and move you toward the ridge — the one case where the TOPS starts to
+  count.</li>
+  <li><strong>Robotics and sensor fusion</strong>, which is what the Jetson line is actually built
+  for and where its compute is fully used.</li>
+</ul>
+
+<p>An embedding or classification sidecar for your pi harness on a $249 Nano is a genuinely good
+idea. Running the agent's main model on it is not.</p>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <span class="qnum">Question 1</span>
+  <p class="q">A device advertises 40 TOPS with 68 GB/s of bandwidth. What share of that compute does single-stream decode actually use?</p>
+  <div class="options">
+    <button class="opt" data-correct>Under one percent</button>
+    <button class="opt">About one quarter</button>
+    <button class="opt">Roughly two thirds</button>
+    <button class="opt">Almost exactly all</button>
+  </div>
+  <div class="explain">
+    <strong>Under one percent</strong> — about 0.34%. The ridge point is 588 FLOPs/byte and decode
+    supplies roughly 2, so you sit almost 300× to the left of where the compute would matter. This
+    is why two devices with identical bandwidth and wildly different TOPS generate tokens at the
+    same speed.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 2</span>
+  <p class="q">The 13 and 26 TOPS Raspberry Pi AI HAT+ boards cannot run language models at all. What is the reason?</p>
+  <div class="options">
+    <button class="opt" data-correct>No onboard memory</button>
+    <button class="opt">Insufficient TOPS rating</button>
+    <button class="opt">Wrong CPU architecture</button>
+    <button class="opt">Missing CUDA support</button>
+  </div>
+  <div class="explain">
+    <strong>No onboard memory.</strong> Both use the Pi's system RAM across a narrow link and have
+    only small on-chip buffers, which suits vision models with small weights. The AI HAT+ 2 unlocked
+    LLMs by adding 8 GB of its own — a memory change, not a compute one.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 3</span>
+  <p class="q">Orin Nano Super: ~6.5 GB usable, Llama 8B Q4 is 4.9 GB, KV cache is 128 KB per token. About how much context fits?</p>
+  <div class="options">
+    <button class="opt" data-correct>About 12k tokens</button>
+    <button class="opt">About 42k tokens</button>
+    <button class="opt">About 130k tokens</button>
+    <button class="opt">About 4k tokens</button>
+  </div>
+  <div class="explain">
+    <strong>~12k tokens.</strong> 6.5 − 4.9 = 1.6 GB of headroom, divided by 128 KB per token. The
+    model advertises a 128k context window and the hardware can hold a tenth of it — a gap the spec
+    sheet will never mention, and one you can only see by doing Lesson 3's arithmetic.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 4</span>
+  <p class="q">A mini PC is marketed for AI. Which specification should you look up first?</p>
+  <div class="options">
+    <button class="opt" data-correct>Memory bandwidth, then capacity</button>
+    <button class="opt">TOPS rating, then price</button>
+    <button class="opt">CPU cores, then clock</button>
+    <button class="opt">Power draw, then size</button>
+  </div>
+  <div class="explain">
+    <strong>Bandwidth, then capacity.</strong> Bandwidth sets how fast tokens come out; capacity
+    sets whether the model and its cache fit at all. Vendors lead with TOPS precisely because it is
+    the largest and least binding number they have. If bandwidth is not on the spec sheet, infer it
+    from the memory type and bus width — or from a measured token rate, as we did with the Hailo.
+  </div>
+</div>
+
+<div class="scoreboard" data-scoreboard></div>
+
+<h2>Where this leaves the buy decision</h2>
+
+<p>The micro-PC tier is out for hosting your agent's main model — not because the boxes are slow,
+but because 8 GB cannot hold a model and an agent-scale KV cache simultaneously. The tier that
+survives starts at 64 GB, and inside it the ranking is by bandwidth: M1 Max 400, then a three-way
+tie at 273 between the Mac mini M4 Pro, the Thor, and the Spark.</p>
+
+<p>The genuinely new candidate this lesson surfaces is the <strong>Mac mini M4 Pro</strong> — the
+Spark's bandwidth and comparable usable memory, from $1,599, with the caveat that it has no CUDA
+and Apple charges steeply for the 64 GB configuration. Worth pricing properly when we make the call.</p>
+
+<div class="source">
+  <span class="tag">Read this next</span>
+  <span class="title">Why Your Jetson Orin Nano's 40 TOPS Goes Unused — Eric X. Liu</span>
+  <p>Measured benchmarks across Ollama and vLLM on real hardware, plus a clean roofline derivation
+  that reaches the same 588 FLOPs/byte ridge point we did. The best single treatment of why edge AI
+  marketing and edge AI reality diverge.</p>
+  <p style="margin-top:0.6rem"><a href="https://ericxliu.me/posts/benchmarking-llms-on-jetson-orin-nano/">ericxliu.me/posts/benchmarking-llms-on-jetson-orin-nano/</a></p>
+</div>
+
+<div class="ask">
+  <strong>Your teacher is one message away.</strong> Worth asking: "is a Nano worth it as an
+  embedding sidecar for pi?", "how would I verify a bandwidth figure a vendor doesn't publish?", or
+  "does the Mac mini M4 Pro actually beat the M1 Max once you price 64 GB?"
+</div>
+
+<nav class="footer-nav">
+  <strong>Workspace</strong>
+  <ul>
+    <li><a href="0001-the-bandwidth-rule.html">Lesson 1 · The Bandwidth Rule</a></li>
+    <li><a href="0002-the-cost-of-a-turn.html">Lesson 2 · The Cost of a Turn</a></li>
+    <li><a href="0003-the-cache-has-a-price.html">Lesson 3 · The Cache Has a Price</a></li>
+    <li><a href="../reference/napkin-math.html">Reference · Napkin math cheat sheet</a></li>
+    <li><a href="../GLOSSARY.md">Glossary</a> · <a href="../RESOURCES.md">Resources</a> · <a href="../MISSION.md">Mission</a></li>
+  </ul>
+</nav>
+
+</div>
+<script src="../assets/quiz.js"></script>
+<script src="../assets/kvcalc.js"></script>
+<script src="../assets/roofline.js"></script>
+</body>
+</html>

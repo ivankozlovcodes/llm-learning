@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 18 · The Context Window</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+<link rel="stylesheet" href="../assets/calc.css">
+<link rel="stylesheet" href="../assets/ctxbudget.css">
+</head>
+<body>
+<div class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 18 · Local LLM Fluency</p>
+  <h1>The Context Window</h1>
+  <p class="standfirst">Lesson 11 taught you when to throw context away. This is the lesson about
+  what was in there to begin with — and about the second ceiling, the one that is nowhere on the
+  spec sheet and binds long before the memory runs out.</p>
+  <div class="meta">
+    <span>~22 minutes</span>
+    <span>Prerequisites: <a href="0017-input-and-output-tokens.html">Lesson 17</a>, <a href="0011-compaction-policy.html">Lesson 11</a></span>
+    <span><a href="../MISSION.md">Mission</a> · <a href="../GLOSSARY.md">Glossary</a> · <a href="../reference/napkin-math.html">Cheat sheet</a></span>
+  </div>
+</header>
+
+<div class="keystone">
+  <span class="label">The one idea</span>
+  <p>A context window has <strong>two ceilings</strong>, and they are different numbers.</p>
+  <p><strong>Memory</strong> says how much <em>fits</em> — weights plus KV cache against your budget,
+  the arithmetic from <a href="0003-the-cache-has-a-price.html">Lesson 3</a>. <strong>Attention</strong>
+  says how much <em>works</em> — the point past which the model is still answering but is measurably
+  less reliable.</p>
+  <p>On your 8 GB machine memory binds first. On the 64 GB machine attention binds first, by a factor
+  of ten. Knowing which one you are up against decides whether the fix is compaction or curation.</p>
+</div>
+
+<h2>What is in there before you say anything</h2>
+
+<p>The window does not start empty. A modest harness — seven tools, a system prompt, a project
+instructions file — has already spent a substantial fraction of the budget by the time the first
+user message arrives. Measured with Qwen3's tokenizer:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Component</th><th class="num">Chars</th><th class="num">Tokens</th><th>Volatility</th></tr></thead>
+  <tbody>
+    <tr><td>System prompt</td><td class="num">645</td><td class="num">128</td><td>Fixed for the session</td></tr>
+    <tr><td>Environment block (cwd, platform, date)</td><td class="num">168</td><td class="num">64</td><td>Fixed — <em>unless</em> it carries a clock</td></tr>
+    <tr><td>Tool schemas — seven of them</td><td class="num">2,530</td><td class="num">651</td><td>Fixed unless a plugin registers more</td></tr>
+    <tr class="hi"><td><strong>Project instructions file</strong></td><td class="num">3,786</td><td class="num"><strong>863</strong></td><td>Fixed, and the largest single item</td></tr>
+    <tr><td><strong>Static prefix total</strong></td><td class="num">7,129</td><td class="num"><strong>1,706</strong></td><td></td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Measured against <a href="https://huggingface.co/Qwen/Qwen3-1.7B/blob/main/tokenizer.json"><code>Qwen/Qwen3-1.7B</code></a>. The tool schemas are seven realistic definitions — read, write, edit, bash, grep, glob, todo — averaging <strong>92 tokens each</strong> (range 69–111). The project instructions file is this workspace's own <code>MISSION.md</code>, at 228 tokens per KB of markdown.</span>
+
+<p>Two things in that table are worth sitting with. First, on the 8 GB machine's ~11,800-token memory
+ceiling, <strong>1,706 tokens is 14% of everything you have</strong>, gone before the conversation
+starts. Second, the project instructions file is bigger than all seven tool schemas combined — and it
+is the item people never think to count.</p>
+
+<div class="sidenote">
+  <strong>Tools are not free, and not only in tokens.</strong> At ~92 tokens each, twenty tools is
+  1,840 tokens of pure schema. But Anthropic's guidance names the sharper cost: "one of the most
+  common failure modes we see is bloated tool sets that cover too much functionality or lead to
+  ambiguous decision points", with the test being — "if a human engineer can't definitively say which
+  tool should be used in a given situation, an AI agent can't be expected to do better." That is
+  <a href="0010-tool-design.html">Lesson 10's</a> decision bill, restated by the people who ship it.
+  <span class="cite"><a href="https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents">Effective context engineering for AI agents</a>, Anthropic Engineering.</span>
+</div>
+
+<h2>The ordering rule</h2>
+
+<p>Composition is half the story; <em>order</em> is the other half, and it is worth more than it
+looks. <a href="0002-the-cost-of-a-turn.html">Lesson 2</a> established that cache reuse survives only
+while the prefix is byte-identical. That single fact dictates the layout of the entire window:</p>
+
+<div class="formula">
+  <span class="cap">arrange the context</span>
+  system prompt <span class="op">→</span> tool schemas <span class="op">→</span> project instructions
+  <span class="op">→</span> retrieved files <span class="op">→</span> conversation <span class="op">→</span> latest turn<br>
+  <span class="cap">most stable ────────────────────────────────▶ most volatile</span>
+</div>
+
+<p>Everything before the first byte that changes is reusable; everything after it is re-prefilled.
+Put a timestamp in the system prompt and you have moved the change to position zero, invalidating the
+entire cache on every single turn. Sort your tool schemas non-deterministically and you have done the
+same thing, silently, in a way that will never show up as an error.</p>
+
+<div class="keystone">
+  <span class="label">Three rules that follow</span>
+  <p><strong>1. Never put anything volatile early.</strong> No clocks, no random ids, no
+  "files changed since last turn" in the system prompt. If the model needs the time, give it a tool.</p>
+  <p><strong>2. Fix the order of anything iterated.</strong> Tool schemas, file lists, environment
+  keys — sort them deterministically, or a map iteration order will cost you every cache hit.</p>
+  <p><strong>3. Append; do not rewrite.</strong> This is why
+  <a href="0011-compaction-policy.html">Lesson 11</a> insists on compacting the conversation body and
+  leaving the stable head byte-identical.</p>
+</div>
+
+<h2>See your own budget</h2>
+
+<div class="calc" data-ctxbudget></div>
+
+<h2>Usable is not advertised</h2>
+
+<p>Now the second ceiling. A model card says 128k, or 262k. That number describes what the model will
+<em>accept</em>, not the range over which it stays reliable — and the gap is large, consistent, and
+well documented.</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Study</th><th>What it found</th></tr></thead>
+  <tbody>
+    <tr><td><a href="https://arxiv.org/abs/2404.06654">RULER</a><br><span class="cite">17 models, 13 tasks</span></td>
+        <td>"almost all models exhibit large performance drops as the context length increases." Of models claiming 32K or more, "only half of them can maintain satisfactory performance at the length of 32K."</td></tr>
+    <tr class="hi"><td><a href="https://arxiv.org/abs/2502.05167">NoLiMa</a><br><span class="cite">13 models claiming 128K+</span></td>
+        <td>Retrieval where the question shares no words with the answer. "At 32K, for instance, 11 models drop below 50% of their strong short-length baselines." GPT-4o fell from <strong>99.3% to 69.7%</strong>.</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2307.03172">Lost in the Middle</a></td>
+        <td>"performance is often highest when relevant information occurs at the beginning or end of the input context, and significantly degrades when models must access relevant information in the middle" — and this holds "even for explicitly long-context models."</td></tr>
+    <tr><td><a href="https://www.trychroma.com/research/context-rot">Context Rot</a><br><span class="cite">18 models, Chroma, 2025</span></td>
+        <td>"Large Language Models (LLMs) are typically presumed to process context uniformly — that is, the model should handle the 10,000th token just as reliably as the 100th. However, in practice, this assumption does not hold."</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="sidenote">
+  <strong>The finding that should unsettle you.</strong> Chroma reports that "models perform better on
+  shuffled haystacks than on logically structured ones" — coherent, well-organised text degraded
+  retrieval accuracy relative to the same sentences in random order. And "even a single distractor
+  reduces performance relative to the baseline, and adding four distractors compounds this
+  degradation further." Neither result is something you would predict from the intuition that a model
+  simply "reads" its context. Both mean an agent transcript — long, coherent, and full of
+  near-miss content from earlier attempts — is close to the worst-case shape.
+</div>
+
+<p>The mechanism is not mysterious. Attention compares every token to every other token, so
+<strong>n tokens create n² pairwise relationships</strong>. Anthropic's framing is that models have
+an "attention budget" they draw down as context grows; NoLiMa's authors attribute their measured
+declines to "the increased difficulty the attention mechanism faces in longer contexts when literal
+matches are absent." Same phenomenon, two vocabularies.</p>
+
+<h2>Which ceiling binds — yours, computed</h2>
+
+<p>Both ceilings are numbers you can now work out. The memory ceiling comes from
+<a href="0003-the-cache-has-a-price.html">Lesson 3</a>; the attention ceiling is a judgement informed
+by the table above.</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Machine</th><th class="num">Memory ceiling</th><th class="num">Attention ceiling</th><th>Binds first</th></tr></thead>
+  <tbody>
+    <tr><td><strong>8 GB M1</strong><br>Qwen3-4B Q4_K_M, 144 KB/token</td>
+        <td class="num">(4.2 − 2.50) GB ÷ 144 KB<br><strong>≈ 11,800</strong></td>
+        <td class="num">~16,000</td>
+        <td><strong>Memory</strong>, at about 0.7× the attention limit</td></tr>
+    <tr class="hi"><td><strong>64 GB</strong><br>Ornith-35B-A3B Q4_K_M, 80 KB/token</td>
+        <td class="num">(48 − 21.71) GB ÷ 80 KB<br><strong>≈ 328,000</strong></td>
+        <td class="num">~32,000</td>
+        <td><strong>Attention</strong>, by more than 10×</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Memory budgets from <a href="0005-what-fits-in-8gb.html">Lesson 5</a> (4.2 GB) and <a href="0003-the-cache-has-a-price.html">Lesson 3</a> (48 GB usable). KV geometry from each model's <code>config.json</code>. The attention figures are estimates, not measurements — they are where the studies above show reliability falling away, and a smaller model is placed lower on purpose.</span>
+
+<div class="keystone">
+  <span class="label">Why this changes what you build</span>
+  <p>On the <strong>8 GB machine</strong> the constraint is physical. You run out of memory before the
+  model runs out of competence, the failure is loud (swapping, <a href="0005-what-fits-in-8gb.html">Lesson 5</a>),
+  and the fix is <a href="0011-compaction-policy.html">Lesson 11's</a> compaction trigger.</p>
+  <p>On the <strong>64 GB machine</strong> the constraint is cognitive. You could hold 328,000 tokens
+  and the machine would never complain — the model would just get quietly worse from about 32,000
+  onward. <strong>There is no error, no slowdown, and no signal.</strong> The fix is not compaction
+  for memory, it is curation for quality: fewer tools, shorter tool results, and summarising a
+  transcript long before anything is technically full.</p>
+  <p>Same harness, same code, opposite failure mode. A compaction plugin that only watches memory is
+  correct on one of your two machines.</p>
+</div>
+
+<h2>What to actually do</h2>
+
+<p>Anthropic names three tactics for long-horizon agents, and you have already built two of them:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Tactic</th><th>In this workspace</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Compaction</strong> — summarise and reinitialise as the window fills</td><td><a href="0011-compaction-policy.html">Lesson 11</a>, with the trigger arithmetic. Add a quality trigger alongside the memory one.</td></tr>
+    <tr><td><strong>Structured note-taking</strong> — persist state <em>outside</em> the window</td><td>Not yet built. A pi tool that writes findings to a file and reads them back on demand converts permanent context cost into on-demand cost.</td></tr>
+    <tr><td><strong>Sub-agents</strong> — a focused context that returns only a summary</td><td><a href="0013-subagents-and-batching.html">Lesson 13</a>. The context argument is as strong as the batching one: the sub-agent's working history never enters the parent's window.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Underneath all three is one principle, which is the sentence to keep: find <strong>"the smallest
+possible set of high-signal tokens that maximize the likelihood of some desired outcome."</strong>
+Every lesson in Part Three is a special case of it.</p>
+
+<hr>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <span class="qnum">Question 1</span>
+  <p class="q">Why must volatile content go late in the context, never early?</p>
+  <div class="options">
+    <button class="opt">Models attend better to recent tokens</button>
+    <button class="opt" data-correct>Cache reuse ends at the change</button>
+    <button class="opt">Late tokens use less KV cache</button>
+    <button class="opt">Templates require a fixed ordering</button>
+  </div>
+  <div class="explain">
+    <strong>Cache reuse ends at the first changed byte.</strong> Everything after it is re-prefilled.
+    A timestamp in the system prompt moves that break to position zero and costs you the entire
+    prefix on every turn — with no error and no warning, only a session that feels slow.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 2</span>
+  <p class="q">On the 64 GB machine, which limit do you actually hit first?</p>
+  <div class="options">
+    <button class="opt">Memory, at roughly 328,000 tokens</button>
+    <button class="opt" data-correct>Attention, at roughly 32,000 tokens</button>
+    <button class="opt">The model's advertised context window</button>
+    <button class="opt">Neither — the machine has headroom</button>
+  </div>
+  <div class="explain">
+    <strong>Attention, by more than tenfold.</strong> The memory arithmetic permits ~328,000 tokens;
+    the evidence says reliability falls away around 32,000. Nothing reports this. The session keeps
+    running and the answers keep coming — they are just worse.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 3</span>
+  <p class="q">In the measured static prefix, which single item was largest?</p>
+  <div class="options">
+    <button class="opt">The seven tool schemas together</button>
+    <button class="opt" data-correct>The project instructions file</button>
+    <button class="opt">The system prompt itself</button>
+    <button class="opt">The environment information block</button>
+  </div>
+  <div class="explain">
+    <strong>The project instructions file</strong> — 863 tokens against 651 for all seven tool
+    schemas, 128 for the system prompt and 64 for the environment block. Markdown runs about 228
+    tokens per KB, so an AGENTS.md that grows to 20 KB quietly costs 4,500 tokens on every turn.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 4</span>
+  <p class="q">Chroma found models did better on shuffled haystacks than coherent ones. So?</p>
+  <div class="options">
+    <button class="opt">Shuffle inputs before sending them</button>
+    <button class="opt">Coherent text uses more tokens</button>
+    <button class="opt" data-correct>An agent transcript is a bad shape</button>
+    <button class="opt">Retrieval should replace long context</button>
+  </div>
+  <div class="explain">
+    <strong>An agent transcript is close to the worst case.</strong> It is long, coherent, and full of
+    near-miss content from earlier attempts — exactly the distractors the same study showed compound
+    degradation. It is not an argument for shuffling anything; it is an argument for keeping failed
+    attempts and superseded tool output out of the window.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 5</span>
+  <p class="q">A compaction plugin triggering only on memory pressure is wrong where?</p>
+  <div class="options">
+    <button class="opt">On the 8 GB machine, which swaps</button>
+    <button class="opt" data-correct>On the 64 GB machine, silently</button>
+    <button class="opt">On both, since memory is measurable</button>
+    <button class="opt">On neither — memory is the real limit</button>
+  </div>
+  <div class="explain">
+    <strong>On the 64 GB machine.</strong> There, memory permits ten times more context than the model
+    handles well, so a memory-triggered policy never fires and quality degrades with no signal at all.
+    The same plugin is correct on the 8 GB machine, where memory genuinely binds first.
+  </div>
+</div>
+
+<div class="scoreboard" data-scoreboard></div>
+
+<div class="source">
+  <span class="tag">Read this next</span>
+  <span class="title">Context Rot: How Increasing Input Tokens Impacts LLM Performance — Chroma</span>
+  <p>Eighteen models, several task designs, and the clearest demonstration anywhere that the
+  uniform-processing assumption is false. Read it for the distractor and haystack-structure
+  experiments in particular; they are the ones that map directly onto what an agent transcript looks
+  like. Pair it with <a href="https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents">Anthropic's context engineering guide</a> for the practitioner side.
+  <a href="https://www.trychroma.com/research/context-rot">trychroma.com/research/context-rot</a></p>
+</div>
+
+<div class="ask">
+  <strong>Your teacher is one message away.</strong> Worth asking: "count the real static prefix of my
+  pi setup", "design a quality trigger for compaction, not just a memory one", "which of my tools
+  could become a note-taking tool instead?", or "audit my system prompt for anything volatile".
+</div>
+
+<div class="addendum">
+  <span class="label">Addendum · the 48 GB M4</span>
+  <span class="when">Added 2026-09-05 — the lesson above stands as written; this is what a third machine changes.</span>
+  <p>The two-ceiling table above has a third row now, and it lands on the same side as the home
+  machine rather than the travel one:</p>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Machine</th><th class="num">Memory ceiling</th><th class="num">Attention ceiling</th><th>Binds</th></tr></thead>
+    <tbody>
+      <tr><td>8 GB M1, Qwen3-4B</td><td class="num">~11,800</td><td class="num">~16,000</td><td>Memory</td></tr>
+      <tr class="hi"><td><strong>48 GB M4, Ornith-35B-A3B</strong></td><td class="num">(36 − 21.71) ÷ 80 KB<br><strong>≈ 178,600</strong></td><td class="num">~32,000</td><td><strong>Attention, by 5.6×</strong></td></tr>
+      <tr><td>64 GB M1 Max, Ornith-35B-A3B</td><td class="num">≈ 328,000</td><td class="num">~32,000</td><td>Attention, by 10×</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p><strong>This makes the Lesson 11 defect worse, not better.</strong> A compaction policy that
+  triggers on memory pressure is now wrong on <strong>two of your three machines</strong> — and the
+  M4 is the one you will actually work on during the trip. On it, memory permits five times more
+  context than the model handles well, so the trigger never fires and quality decays with no signal
+  at all.</p>
+  <p>There is a trap specific to having more memory: the 8 GB machine <em>forced</em> good hygiene.
+  Short tool results, few files in context, aggressive compaction — all were survival, not
+  discipline. On 36 GB nothing stops you reading forty files into the window, and nothing will tell
+  you that you have. The failure mode changed from loud to silent, which means the policy has to
+  become deliberate.</p>
+  <p>The context budget calculator now carries a <strong>48 GB M4 · Ornith</strong> setup. Select it,
+  push the "files read into context" slider, and note that the bar never turns red for memory — it
+  crosses the attention ceiling first and keeps going. Machine arithmetic in <a href="../reference/three-machines.html">Three Machines</a>.</p>
+</div>
+
+<nav class="footer-nav">
+  <strong>Workspace</strong>
+  <ul>
+    <li><a href="../index.html">Workspace index — all lessons</a></li>
+    <li><a href="0017-input-and-output-tokens.html">Lesson 17 · Input and Output Tokens</a></li>
+    <li><a href="0009-anatomy-of-a-turn.html">Lesson 9 · Anatomy of a Turn</a> · <a href="0011-compaction-policy.html">Lesson 11 · Compaction Policy</a></li>
+    <li><a href="../reference/napkin-math.html">Reference · Napkin math</a> · <a href="../GLOSSARY.md">Glossary</a> · <a href="../MISSION.md">Mission</a></li>
+  </ul>
+</nav>
+
+</div>
+<script src="../assets/quiz.js"></script>
+<script src="../assets/ctxbudget.js"></script>
+</body>
+</html>

@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reference · Napkin Math for Local LLMs</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<style>
+  /* Reference docs are denser than lessons: two columns in print, tighter rhythm. */
+  .page { max-width: 50rem; padding-top: 3rem; }
+  .ref-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 2.4rem; }
+  @media (max-width: 720px) { .ref-grid { grid-template-columns: 1fr; } }
+  .ref-grid h2:first-child { margin-top: 1.5rem; }
+  .rule-card { border: 1px solid var(--rule); border-radius: 5px; padding: 0.9rem 1.1rem; margin-bottom: 0.8rem; font-size: 0.92rem; }
+  .rule-card .n { font-family: var(--mono); font-weight: 700; color: var(--accent); }
+  @media print { .page { padding-top: 0; } h2 { margin-top: 1.6rem; } body { font-size: 9.5pt; } }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Reference · Local LLM Hardware</p>
+  <h1>Napkin Math</h1>
+  <p class="standfirst">Everything needed to predict local LLM performance from a spec sheet.
+  Print it, keep it next to the buy decision.</p>
+  <div class="meta">
+    <span>Established in <a href="../lessons/0001-the-bandwidth-rule.html">Lesson 1</a> · <a href="../lessons/0002-the-cost-of-a-turn.html">Lesson 2</a> · <a href="../lessons/0003-the-cache-has-a-price.html">Lesson 3</a> · <a href="../lessons/0004-the-tops-trap.html">Lesson 4</a> · <a href="../lessons/0005-what-fits-in-8gb.html">5</a> · <a href="../lessons/0006-the-quantization-ladder.html">6</a></span>
+    <span><a href="../GLOSSARY.md">Glossary</a></span>
+  </div>
+</header>
+
+<h2>The core formulas</h2>
+
+<div class="formula">
+  bytes per token (GB) = active params (B) × bits per weight ÷ 8<br>
+  memory footprint (GB) = <em>total</em> params (B) × bits per weight ÷ 8<br>
+  <span class="num">tok/s ceiling = bandwidth (GB/s) ÷ bytes per token (GB)</span><br>
+  tok/s realistic = ceiling × efficiency (0.6 – 0.85)
+  <span class="cap">decode only, single stream, weights only</span>
+</div>
+
+<div class="keystone">
+  <span class="label">The distinction that does the work</span>
+  <p><strong>Capacity comes from total parameters. Speed comes from active parameters.</strong>
+  For a dense model they are the same number, which is why the distinction only becomes visible —
+  and decisive — with Mixture-of-Experts models.</p>
+</div>
+
+<h2>Bits per weight</h2>
+
+<p>Effective values, including the metadata k-quants store alongside the weights. Multiply
+parameter count by these and divide by 8 to get gigabytes.</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Format</th><th class="num">Effective bpw</th><th class="num">GB per 1B params</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>F16 / BF16</td><td class="num">16</td><td class="num">2.00</td><td>Unquantized. Reference quality.</td></tr>
+    <tr><td>Q8_0</td><td class="num">8.5</td><td class="num">1.06</td><td>Quality loss not measurable in practice.</td></tr>
+    <tr><td>Q6_K</td><td class="num">6.6</td><td class="num">0.82</td><td>Safe. Use when memory allows.</td></tr>
+    <tr><td>Q5_K_M</td><td class="num">5.7</td><td class="num">0.71</td><td>Good compromise above the sweet spot.</td></tr>
+    <tr><td><strong>Q4_K_M</strong></td><td class="num">4.9</td><td class="num">0.61</td><td><strong>The community default.</strong> ~75% smaller than F16, small measurable quality cost.</td></tr>
+    <tr><td>MXFP4</td><td class="num">4.25</td><td class="num">0.53</td><td>Native 4-bit training format; gpt-oss ships in it.</td></tr>
+    <tr><td>Q3_K_M</td><td class="num">3.9</td><td class="num">0.49</td><td>Degradation becomes noticeable. Last resort to make something fit.</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Format list: <a href="https://github.com/ggml-org/llama.cpp/blob/master/tools/quantize/README.md">llama.cpp quantize README</a>. Quality evaluation: <a href="https://arxiv.org/html/2601.14277v1">arXiv 2601.14277</a>.</span>
+
+<h2>Machine bandwidth</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Machine</th><th class="num">Bandwidth</th><th class="num">Usable mem</th><th>Character</th></tr></thead>
+  <tbody>
+    <tr><td>MacBook Pro M1 Pro 32 GB</td><td class="num">200 GB/s</td><td class="num">~24 GB</td><td>Entry. Note: M1 Pro caps at 32 GB.</td></tr>
+    <tr><td>MacBook Pro M1 Max 64 GB</td><td class="num">400 GB/s</td><td class="num">~48 GB</td><td>Best value in used hardware.</td></tr>
+    <tr><td>Mac Studio M4 Max 128 GB</td><td class="num">546 GB/s</td><td class="num">~96 GB</td><td>Capacity and speed, at a price.</td></tr>
+    <tr><td>NVIDIA DGX Spark</td><td class="num">273 GB/s</td><td class="num">~110 GB</td><td>Capacity + CUDA. Slow decode.</td></tr>
+    <tr><td>AMD Strix Halo 128 GB</td><td class="num">256 GB/s</td><td class="num">~96 GB</td><td>Spark-like at roughly half the price.</td></tr>
+    <tr><td>RTX 3090</td><td class="num">936 GB/s</td><td class="num">~23 GB</td><td>Fast, cheap, capacity-starved.</td></tr>
+    <tr><td>RTX 4090</td><td class="num">1008 GB/s</td><td class="num">~23 GB</td><td>Fastest per card at this tier.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="sidenote">
+  <strong>Apple unified memory:</strong> macOS reserves a share of RAM for the system. The default
+  GPU allocation is roughly 65–75% of total; raise it with
+  <code>sudo sysctl iogpu.wired_limit_mb=&lt;value&gt;</code>. On a 64 GB machine this takes usable
+  memory from ~48 GB to ~56 GB.
+</div>
+
+<h2>Efficiency factors</h2>
+
+<p>The fraction of theoretical peak bandwidth a real runtime achieves. Multiply the ceiling by this.</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Situation</th><th class="num">Achieved</th></tr></thead>
+  <tbody>
+    <tr><td>Hand-optimised CUDA kernel, dense model</td><td class="num">~90%</td></tr>
+    <tr><td>llama.cpp, dense model, GPU backend</td><td class="num">58–82%</td></tr>
+    <tr><td>llama.cpp, Apple Silicon CPU only</td><td class="num">~65%</td></tr>
+    <tr><td>MoE model (experts scattered in memory)</td><td class="num">40–60%</td></tr>
+    <tr><td><strong>Default assumption when guessing</strong></td><td class="num"><strong>70%</strong></td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Source: <a href="https://zeux.io/2024/03/15/llm-inference-sol/">zeux.io, LLM inference speed of light</a>; MoE range inferred from measured gpt-oss-120b results on DGX Spark.</span>
+
+<h2>The cost of a turn</h2>
+
+<div class="formula">
+  turn time = prompt tokens ÷ prefill rate + output tokens ÷ decode rate<br>
+  <span class="num">time to first token = prompt tokens ÷ prefill rate</span>
+  <span class="cap">prefill is compute-bound · decode is bandwidth-bound</span>
+</div>
+
+<p>With prefix cache reuse, "prompt tokens" means <strong>only the newly appended tokens</strong>.
+Without it, it means the entire conversation, every turn — and session cost becomes quadratic.</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Phase</th><th>Bound by</th><th>Spec that moves it</th><th>Shape</th></tr></thead>
+  <tbody>
+    <tr><td>Prefill</td><td>Compute</td><td>GPU cores / TFLOPS</td><td>Matrix–matrix, high arithmetic intensity</td></tr>
+    <tr><td>Decode</td><td>Memory bandwidth</td><td>GB/s</td><td>Matrix–vector, ~2 FLOPs per weight</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Measured prefill / decode rates</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Setup</th><th class="num">Prefill</th><th class="num">Decode</th><th class="num">Ratio</th></tr></thead>
+  <tbody>
+    <tr><td>M1 Max · Llama 7B Q4_0</td><td class="num">530</td><td class="num">61.2</td><td class="num">9:1</td></tr>
+    <tr><td>M2 Max · Llama 7B Q4_0</td><td class="num">671</td><td class="num">66.0</td><td class="num">10:1</td></tr>
+    <tr><td>M1 Max · Llama 70B Q4 <em>(est)</em></td><td class="num">~53</td><td class="num">~7.4</td><td class="num">7:1</td></tr>
+    <tr><td>DGX Spark · Llama 8B FP8</td><td class="num">7,991</td><td class="num">20.5</td><td class="num">390:1</td></tr>
+    <tr><td>DGX Spark · gpt-oss-20b MXFP4</td><td class="num">2,053</td><td class="num">49.7</td><td class="num">41:1</td></tr>
+    <tr><td>DGX Spark · Llama 70B FP8</td><td class="num">803</td><td class="num">2.7</td><td class="num">297:1</td></tr>
+    <tr><td>DGX Spark · Llama 8B FP8, batch 32</td><td class="num">7,949</td><td class="num">368</td><td class="num">22:1</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Tokens/sec, batch 1 unless stated. Apple figures: <a href="https://github.com/ggml-org/llama.cpp/discussions/4167">llama.cpp thread #4167</a>. Spark figures: <a href="https://www.lmsys.org/blog/2025-10-13-nvidia-dgx-spark/">LMSYS review</a> (SGLang).</span>
+
+<div class="sidenote">
+  <strong>Read the ratio, not the absolutes.</strong> A balanced machine (Apple, ~10:1) suits a
+  harness that reuses its cache, where decode dominates. A lopsided machine (Spark, ~300:1) suits a
+  harness that re-prefills, where ingestion dominates. The ratio tells you which tool you are holding.
+</div>
+
+<h2>KV cache budget</h2>
+
+<div class="formula">
+  <span class="num">KV bytes per token = 2 × layers × kv-heads × head-dim × bytes per element</span><br>
+  KV cache (GB) = bytes per token × context tokens ÷ 10⁹<br>
+  total footprint = weights + KV cache
+  <span class="cap">parameter count does not appear · read layers/kv-heads/head-dim from config.json</span>
+</div>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Model</th><th class="num">Layers</th><th class="num">KV heads</th><th class="num">Head dim</th><th class="num">KV/token (F16)</th><th class="num">@42k ctx</th></tr></thead>
+  <tbody>
+    <tr><td>Llama 3.1 8B</td><td class="num">32</td><td class="num">8</td><td class="num">128</td><td class="num">128 KB</td><td class="num">5.5 GB</td></tr>
+    <tr><td>Mistral Small 24B</td><td class="num">40</td><td class="num">8</td><td class="num">128</td><td class="num">160 KB</td><td class="num">6.9 GB</td></tr>
+    <tr><td>Qwen3-30B-A3B</td><td class="num">48</td><td class="num">4</td><td class="num">128</td><td class="num">96 KB</td><td class="num">4.1 GB</td></tr>
+    <tr><td>Qwen3 32B</td><td class="num">64</td><td class="num">8</td><td class="num">128</td><td class="num">256 KB</td><td class="num">11.0 GB</td></tr>
+    <tr><td>Llama 3.3 70B</td><td class="num">80</td><td class="num">8</td><td class="num">128</td><td class="num">320 KB</td><td class="num">13.8 GB</td></tr>
+    <tr><td>gpt-oss-120b</td><td class="num">36</td><td class="num">8</td><td class="num">64</td><td class="num">72 KB</td><td class="num">3.1 GB</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Geometry from each model's published <code>config.json</code>. KV quantization scales these directly: <code>--cache-type-k q8_0 --cache-type-v q8_0</code> halves them.</span>
+
+<h2>What fits on an M1 Max 64 GB (~48 GB usable)</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Model (Q4_K_M)</th><th class="num">Weights</th><th class="num">Cache @42k</th><th class="num">Total</th><th class="num">Decode</th><th>Verdict</th></tr></thead>
+  <tbody>
+    <tr><td>Llama 3.3 70B</td><td class="num">43.2</td><td class="num">13.8</td><td class="num">57.0</td><td class="num">~7 t/s</td><td>Does not fit</td></tr>
+    <tr><td>Qwen3 32B</td><td class="num">20.1</td><td class="num">11.0</td><td class="num">31.1</td><td class="num">~13 t/s</td><td>Fits, slow</td></tr>
+    <tr><td>Mistral Small 24B</td><td class="num">14.5</td><td class="num">6.9</td><td class="num">21.3</td><td class="num">~18 t/s</td><td>Comfortable</td></tr>
+    <tr><td><strong>Qwen3-30B-A3B</strong></td><td class="num">18.7</td><td class="num">4.1</td><td class="num">22.8</td><td class="num"><strong>~80–100 t/s</strong></td><td><strong>Best fit</strong></td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Roofline: when does compute matter?</h2>
+
+<div class="formula">
+  <span class="num">ridge point = peak compute ÷ memory bandwidth</span><br>
+  achievable = min(peak compute, bandwidth × operational intensity)
+  <span class="cap">decode supplies OI ≈ 2 · prefill supplies ≈ 2 × prompt length</span>
+</div>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Machine</th><th class="num">Compute</th><th class="num">Bandwidth</th><th class="num">Ridge (FLOPs/byte)</th><th class="num">Decode uses</th></tr></thead>
+  <tbody>
+    <tr><td>M1 Max</td><td class="num">~21 TFLOPS</td><td class="num">400 GB/s</td><td class="num">52</td><td class="num">3.8%</td></tr>
+    <tr><td>Jetson Orin Nano</td><td class="num">40 TOPS</td><td class="num">68 GB/s</td><td class="num">588</td><td class="num">0.34%</td></tr>
+    <tr><td>Jetson Orin Nano Super</td><td class="num">67 TOPS</td><td class="num">102 GB/s</td><td class="num">657</td><td class="num">0.30%</td></tr>
+    <tr><td>Hailo-10H</td><td class="num">40 TOPS</td><td class="num">~34 GB/s</td><td class="num">1,176</td><td class="num">0.17%</td></tr>
+    <tr><td>Jetson AGX Orin</td><td class="num">275 TOPS</td><td class="num">205 GB/s</td><td class="num">1,341</td><td class="num">0.15%</td></tr>
+    <tr><td>Jetson AGX Thor</td><td class="num">2,070 TFLOPS</td><td class="num">273 GB/s</td><td class="num">7,582</td><td class="num">0.03%</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">A low ridge means a balanced machine. Ridge is also the prefill:decode ratio in disguise — compare with the measured ratios above.</span>
+
+<h2>Micro PCs and edge devices</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Device</th><th class="num">Memory</th><th class="num">Bandwidth</th><th class="num">Price</th><th>Verdict for agent work</th></tr></thead>
+  <tbody>
+    <tr><td>Raspberry Pi 5 (CPU)</td><td class="num">8–16 GB</td><td class="num">~17 GB/s</td><td class="num">$80–120</td><td>No</td></tr>
+    <tr><td>Pi AI HAT+ 13/26 TOPS</td><td class="num">none</td><td class="num">—</td><td class="num">$70–110</td><td>Cannot run LLMs at all</td></tr>
+    <tr><td>Pi AI HAT+ 2 (Hailo-10H)</td><td class="num">8 GB</td><td class="num">~34 GB/s</td><td class="num">—</td><td>≤6B models only</td></tr>
+    <tr><td>Jetson Orin Nano Super</td><td class="num">8 GB</td><td class="num">102 GB/s</td><td class="num">$249</td><td>Good sidecar, not a host</td></tr>
+    <tr><td>Mac mini M4</td><td class="num">16–32 GB</td><td class="num">120 GB/s</td><td class="num">$799</td><td>Marginal</td></tr>
+    <tr><td>Jetson AGX Orin 64 GB</td><td class="num">64 GB</td><td class="num">205 GB/s</td><td class="num">$1,999</td><td>Viable, CUDA</td></tr>
+    <tr><td>Mac mini M4 Pro</td><td class="num">24–64 GB</td><td class="num">273 GB/s</td><td class="num">from $1,599</td><td>Strong candidate</td></tr>
+    <tr><td>Jetson AGX Thor</td><td class="num">128 GB</td><td class="num">273 GB/s</td><td class="num">$3,499</td><td>Overpriced for this</td></tr>
+    <tr><td>DGX Spark</td><td class="num">128 GB</td><td class="num">273 GB/s</td><td class="num">$4,699</td><td>Overpriced for this</td></tr>
+    <tr><td>MacBook Pro M1 Max 64 GB</td><td class="num">64 GB</td><td class="num">400 GB/s</td><td class="num">$1,000 used</td><td>Best bandwidth per dollar</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Quantization: what it costs</h2>
+
+<div class="formula">
+  <span class="num">effective bpw = file size (bytes) × 8 ÷ parameter count</span>
+  <span class="cap">the label is nominal · this is the measurement</span>
+</div>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Benchmark</th><th class="num">FP16</th><th class="num">Q4_K_S</th><th class="num">Q3_K_S</th><th class="num">3-bit damage</th></tr></thead>
+  <tbody>
+    <tr><td>GSM8K — multi-step reasoning</td><td class="num">77.63</td><td class="num">77.33</td><td class="num">68.31</td><td class="num"><strong>−9.32</strong></td></tr>
+    <tr><td>Aggregate of five benchmarks</td><td class="num">69.47</td><td class="num">69.15</td><td class="num">65.49</td><td class="num">−3.98</td></tr>
+    <tr><td>HellaSwag — commonsense recall</td><td class="num" colspan="3">±1 across every scheme</td><td class="num">~0</td></tr>
+    <tr><td>Decode throughput</td><td class="num">2.83 t/s</td><td class="num">4.65 t/s</td><td class="num">9.91 t/s</td><td class="num">3.5× faster</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Llama-3.1-8B-Instruct, <a href="https://arxiv.org/html/2601.14277v1">arXiv 2601.14277</a>. Reasoning degrades ~2.3× faster than the average score; recall barely moves. Averages hide the damage that matters for agents.</span>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Situation</th><th>Take</th></tr></thead>
+  <tbody>
+    <tr><td>Default</td><td><code>Q4_K_M</code> / <code>UD-Q4_K_XL</code></td></tr>
+    <tr><td>Quality first, memory available</td><td><code>Q5_K_M</code> / <code>Q6_K</code></td></tr>
+    <tr><td>Need ~10% more room</td><td><code>IQ4_XS</code> (costs decode speed)</td></tr>
+    <tr><td>Tight, must fit</td><td><code>UD-Q3_K_XL</code></td></tr>
+    <tr><td>Below 3 bits</td><td>A smaller model — unless the model is very large and sparse</td></tr>
+    <tr><td>Never</td><td><code>Q4_0</code> / <code>Q4_1</code> — legacy, strictly worse than a K-quant</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>The 8 GB machine</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>M1 MacBook Pro 8 GB</th><th class="num">Value</th></tr></thead>
+  <tbody>
+    <tr><td>Bandwidth</td><td class="num">68.25 GB/s</td></tr>
+    <tr><td>macOS overhead</td><td class="num">~3–3.5 GB</td></tr>
+    <tr><td><strong>Practical budget (weights + KV)</strong></td><td class="num"><strong>~4.2 GB</strong></td></tr>
+    <tr><td>Qwen3-4B Q4_K_M + 8k cache</td><td class="num">3.71 GB — fits, ~18 t/s</td></tr>
+    <tr><td>Ornith-1.5-9B Q4_K_M + 8k cache</td><td class="num">6.85 GB — over by 2.7</td></tr>
+    <tr><td>Qwen3.8-27B UD-IQ1_S + 8k cache</td><td class="num">8.34 GB — over by 4.1</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Rules of thumb</h2>
+
+<div class="ref-grid">
+<div>
+  <div class="rule-card"><span class="n">1.</span> A dense model at Q4_K_M occupies about
+  <strong>0.6 GB per billion parameters</strong>. 70B → ~42 GB. 32B → ~20 GB. 8B → ~5 GB.</div>
+
+  <div class="rule-card"><span class="n">2.</span> Halving bits per weight <strong>doubles</strong>
+  decode speed and halves memory. Quantization is a speed decision as much as a fit decision.</div>
+
+  <div class="rule-card"><span class="n">3.</span> If measured speed is far below the predicted
+  realistic figure, suspect a <strong>configuration fault</strong>, not weak hardware — usually the
+  model has spilled out of fast memory.</div>
+</div>
+<div>
+  <div class="rule-card"><span class="n">4.</span> Leave <strong>15–25% headroom</strong> above the
+  weights for the KV cache and the system. A model that exactly fits does not actually fit.</div>
+
+  <div class="rule-card"><span class="n">5.</span> For MoE, divide by <strong>active</strong>
+  parameters for speed and by <strong>total</strong> for whether it loads at all.</div>
+
+  <div class="rule-card"><span class="n">6.</span> Bandwidth and capacity are <strong>independent
+  axes</strong>. Decide which one your workload is actually short of before comparing prices.</div>
+
+  <div class="rule-card"><span class="n">7.</span> Prefill is roughly <strong>10× decode</strong>
+  on a balanced machine and up to <strong>300×</strong> on a compute-heavy one. Check the ratio
+  before assuming a machine is "fast".</div>
+
+  <div class="rule-card"><span class="n">8.</span> In an agent loop, <strong>cache reuse beats
+  every hardware upgrade</strong>. It converts a quadratic session into a linear one.</div>
+
+  <div class="rule-card"><span class="n">9.</span> Cache reuse dies the moment the prefix changes.
+  Timestamps in system prompts, history trimming, and reordered tool definitions are all
+  <strong>cache invalidations</strong>.</div>
+
+  <div class="rule-card"><span class="n">10.</span> Budget the <strong>KV cache before the
+  weights</strong>. At agent-scale context it is routinely 20–25% of the footprint, and it is the
+  reason a model that "fits" stops fitting mid-session.</div>
+
+  <div class="rule-card"><span class="n">11.</span> Prefer a <strong>small-active MoE with few KV
+  heads</strong> for agent work. It wins decode speed and cache size simultaneously — the two
+  things a long-context loop is short of.</div>
+
+  <div class="rule-card"><span class="n">12.</span> Compaction is a <strong>priced trade</strong>:
+  it buys memory with one uncached turn. Rare and deep beats frequent and shallow.</div>
+
+  <div class="rule-card"><span class="n">13.</span> <strong>Ignore TOPS.</strong> It rates a
+  resource decode never exhausts. Find bandwidth and capacity; if a vendor omits bandwidth, infer
+  it from memory type and bus width.</div>
+
+  <div class="rule-card"><span class="n">14.</span> <strong>8 GB is a wall</strong>, not a tier.
+  An 8B model plus an agent-scale cache does not fit, whatever the token rate says.</div>
+
+  <div class="rule-card"><span class="n">15.</span> Audit any vendor tok/s claim: multiply it by
+  the model's size in GB. If the result exceeds the part's bandwidth, the claim is wrong.</div>
+
+  <div class="rule-card"><span class="n">16.</span> <strong>Stay at or above 4 bits</strong>, then
+  take the largest model that fits there. Reasoning degrades ~2.3× faster than average scores show.</div>
+
+  <div class="rule-card"><span class="n">17.</span> Never trust a quant label. <strong>File size ×
+  8 ÷ params</strong> gives the real bits per weight; "1-bit" is routinely 1.8–2.0.</div>
+
+  <div class="rule-card"><span class="n">18.</span> On a memory-starved machine, <strong>quantize
+  the KV cache before the weights</strong>. Q8 cache is nearly free; low-bit weights are not.</div>
+</div>
+</div>
+
+<h2>Worked reference points</h2>
+
+<p>Known-good measurements to calibrate predictions against.</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Model</th><th>Machine</th><th class="num">Predicted</th><th class="num">Measured</th></tr></thead>
+  <tbody>
+    <tr><td>Llama 70B Q4_K_M (43 GB)</td><td>M1 Max 64 GB</td><td class="num">9.3 → ~7.4</td><td class="num">7–9 tok/s</td></tr>
+    <tr><td>Llama 70B FP8 (70.6 GB)</td><td>DGX Spark</td><td class="num">3.9 → ~2.7</td><td class="num">2.7 tok/s</td></tr>
+    <tr><td>gpt-oss-120b MXFP4 (5.1B active)</td><td>DGX Spark</td><td class="num">101 → ~50</td><td class="num">40–60 tok/s</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Measurements: <a href="https://www.lmsys.org/blog/2025-10-13-nvidia-dgx-spark/">LMSYS DGX Spark review</a>, <a href="https://github.com/ggml-org/llama.cpp/discussions/16578">llama.cpp Spark thread</a>, <a href="https://github.com/ggml-org/llama.cpp/discussions/4167">llama.cpp Apple Silicon thread</a>.</span>
+
+<div class="note">
+  <span class="tag">Scope</span>
+  <p>This sheet covers <strong>decode</strong> (Lesson 1), <strong>prefill and turn cost</strong>
+  (Lesson 2), and the <strong>KV cache budget</strong> (Lesson 3), all at batch 1. Together they are
+  enough to price any model on any machine from published specs. Still missing:
+  <strong>batching</strong>, which raises decode throughput sharply while leaving prefill flat, and
+  everything about <strong>model capability</strong> — tool-calling reliability and structured output,
+  which no amount of bandwidth fixes.</p>
+</div>
+
+<nav class="footer-nav">
+  <strong>Workspace</strong>
+  <ul>
+    <li><a href="../lessons/0001-the-bandwidth-rule.html">Lesson 1 · The Bandwidth Rule</a></li>
+    <li><a href="../lessons/0002-the-cost-of-a-turn.html">Lesson 2 · The Cost of a Turn</a></li>
+    <li><a href="../lessons/0003-the-cache-has-a-price.html">Lesson 3 · The Cache Has a Price</a></li>
+    <li><a href="../lessons/0004-the-tops-trap.html">Lesson 4 · The TOPS Trap</a></li>
+    <li><a href="../lessons/0005-what-fits-in-8gb.html">Lesson 5 · What Fits in 8 GB</a></li>
+    <li><a href="../lessons/0006-the-quantization-ladder.html">Lesson 6 · The Quantization Ladder</a></li>
+    <li><a href="../GLOSSARY.md">Glossary</a> · <a href="../RESOURCES.md">Resources</a> · <a href="../MISSION.md">Mission</a></li>
+  </ul>
+</nav>
+
+</div>
+</body>
+</html>

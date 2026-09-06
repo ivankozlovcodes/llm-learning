@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 15 · The Landscape</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<div class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 15 · Local LLM Fluency</p>
+  <h1>The Landscape</h1>
+  <p class="standfirst">Who ships what, as of September 2026 — and the structural shifts that will
+  still be true when every name here is stale.</p>
+  <div class="meta">
+    <span>~20 minutes</span>
+    <span>Prerequisite: <a href="0014-reading-a-model-card.html">Lesson 14</a></span>
+    <span><a href="../MISSION.md">Mission</a> · <a href="../RESOURCES.md">Resources</a></span>
+  </div>
+</header>
+
+<div class="note">
+  <span class="tag">Read this first</span>
+  <p>Specific model names age in weeks. <strong>Architecture facts</strong> below — parameter
+  counts, KV geometry, licences, file sizes — were read directly from Hugging Face
+  <code>config.json</code> and the file API, and are reliable. <strong>Benchmark claims</strong> come
+  from secondary aggregators and vendor announcements; treat them as directional, and apply
+  Lesson 14's scepticism. The <em>patterns</em> in the last section are the part worth memorising.</p>
+</div>
+
+<h2>Four structural shifts</h2>
+
+<h3>1. Sparse MoE has won at the local tier</h3>
+<p>The best models you can run at home now activate a small fraction of their parameters. Ornith-1.5
+is 35B total and ~3B active; Qwen3.8-Flash-Next is 125B with 6B active. This is the direct
+consequence of Lesson 1: capacity is cheap in RAM, speed is expensive in bandwidth, so architectures
+moved to buy capability with parameters you do not have to read.</p>
+
+<h3>2. KV heads collapsed</h3>
+<p>Grouped-query attention went from 8 KV heads to <strong>2</strong> in the current generation,
+with head-dim rising to 256 to compensate. Ornith-35B-A3B needs 80 KB per token; Llama 3.3 70B needs
+320 KB. Long context stopped being a memory problem largely because of this, and it is invisible on
+every spec sheet.</p>
+
+<h3>3. Draft models ship with the weights</h3>
+<p>Both current Qwen releases include <code>MTP/</code> directories — multi-token prediction heads
+for speculative decoding (Lesson 13). Qwen3.8-Flash-Next dedicates a 4B module to it. Inference
+acceleration has moved from a technique you assemble to a component you are handed.</p>
+
+<h3>4. Multimodal is the default, and it costs you</h3>
+<p>Nearly every current release ships an <code>mmproj</code> file — a vision projector, typically
+0.85–0.93 GB. If you are building a text coding agent, that is memory you do not load. Worth knowing
+it is optional; several people budget for it by accident.</p>
+
+<h2>The current field</h2>
+
+<h3>Runs well on your 64 GB machine</h3>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Model</th><th class="num">Total / active</th><th class="num">Q4_K_M</th><th class="num">KV/token</th><th class="num">Licence</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Ornith-1.5-35B-A3B</strong></td><td class="num">35B / ~3B</td><td class="num">21.71 GB</td><td class="num">80 KB</td><td class="num">MIT</td></tr>
+    <tr><td>Qwen3.8-27B</td><td class="num">27.3B dense</td><td class="num">16.46 GB</td><td class="num">256 KB</td><td class="num">Apache-2.0</td></tr>
+    <tr><td>Qwen3-30B-A3B</td><td class="num">30.5B / 3.3B</td><td class="num">~18.7 GB</td><td class="num">96 KB</td><td class="num">Apache-2.0</td></tr>
+    <tr><td>Qwen3 32B</td><td class="num">32.8B dense</td><td class="num">~20.1 GB</td><td class="num">256 KB</td><td class="num">Apache-2.0</td></tr>
+    <tr><td>Llama 3.3 70B</td><td class="num">70.6B dense</td><td class="num">42.5 GB</td><td class="num">320 KB</td><td class="num">Llama licence</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Architecture and sizes read from each model's <code>config.json</code> and file listing on Hugging Face. Licences from the API <code>cardData</code> field.</span>
+
+<div class="keystone">
+  <span class="label">A correction to Lesson 3</span>
+  <p>Lesson 3 named Qwen3-30B-A3B "the answer" for the 64 GB machine. On the numbers,
+  <strong>Ornith-1.5-35B-A3B is strictly better</strong>: comparable active parameters, a
+  <em>smaller</em> KV cache (80 KB vs 96), MIT rather than Apache, and materially stronger reported
+  agentic-coding results. At 21.71 GB of weights plus 10.7 GB for a full 128k context, it fits in
+  ~48 GB with room to spare and should decode at roughly 100 tok/s.</p>
+  <p>Lesson 3's <em>reasoning</em> still holds exactly — small active count, few KV heads. A better
+  model arrived that satisfies the same criteria harder. That is what the criteria are for.</p>
+</div>
+
+<h3>Runs on your 8 GB machine</h3>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Model</th><th class="num">Q4_K_M</th><th class="num">KV/token</th><th>Note</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Qwen3-4B-Instruct-2507</strong></td><td class="num">2.50 GB</td><td class="num">144 KB</td><td>The practical default</td></tr>
+    <tr><td>Gemma 3 4B</td><td class="num">2.49 GB</td><td class="num">—</td><td>Second family for comparison</td></tr>
+    <tr><td>Qwen3-8B</td><td class="num">5.03 GB</td><td class="num">144 KB</td><td>Only at Q3 or below; tight</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3>Above your hardware — worth recognising</h3>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Model</th><th>Shape</th><th>Why it matters to you</th></tr></thead>
+  <tbody>
+    <tr><td>Qwen3.8-Flash-Next</td><td>125B total, 6B active, +51B n-gram embeddings, 4B MTP</td><td>A Qwen4 architecture preview; the direction of travel</td></tr>
+    <tr><td>GLM-5.x</td><td>Frontier-scale</td><td>Reported to lead open-weight coding and terminal benchmarks</td></tr>
+    <tr><td>DeepSeek V4 / V4 Pro</td><td>Frontier-scale MoE</td><td>Strong on mathematics and cost-efficiency at scale</td></tr>
+    <tr><td>Kimi K2.6 / K3</td><td>Frontier-scale</td><td>Long-context and agentic work</td></tr>
+    <tr><td>Ornith-1.5-397B</td><td>Very large MoE</td><td>The big sibling of the model you can actually run</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">These are aggregator and vendor characterisations, not measurements taken here. Directional only.</span>
+
+<h2>Reading a release announcement</h2>
+
+<p>The vocabulary that recurs, decoded:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>You see</th><th>It means</th><th>What to check</th></tr></thead>
+  <tbody>
+    <tr><td><code>A3B</code>, <code>A22B</code></td><td>Active parameters per token</td><td>Decode speed comes from this, not the big number</td></tr>
+    <tr><td><code>Instruct</code> / <code>Base</code></td><td>Chat-tuned vs raw completion</td><td>Base models have no chat template — Lesson 7</td></tr>
+    <tr><td><code>Thinking</code> / reasoning mode</td><td>Emits a reasoning block before answering</td><td>Costs output tokens; needs lazy grammars — Lesson 8</td></tr>
+    <tr><td><code>MTP/</code> in the repo</td><td>Speculative decoding draft heads</td><td>Free speed you must opt into — Lesson 13</td></tr>
+    <tr><td><code>mmproj</code></td><td>Vision projector</td><td>~0.9 GB you can skip for text-only work</td></tr>
+    <tr><td><code>UD-</code> prefix</td><td>Unsloth Dynamic recipe</td><td>Per-layer quantization — Lesson 6</td></tr>
+    <tr><td>"1M context"</td><td>Trained-for maximum</td><td>Your affordable context — Lessons 3 and 5</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>How to stay current without chasing</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Do</th><th>Instead of</th></tr></thead>
+  <tbody>
+    <tr><td>Run Lesson 14's six-step pass on anything that looks interesting</td><td>Reading benchmark tables</td></tr>
+    <tr><td>Watch for <em>architecture</em> changes — KV heads, active ratios, MTP</td><td>Watching leaderboard positions</td></tr>
+    <tr><td>Keep a small eval set from your own pi transcripts</td><td>Trusting anyone's aggregate score</td></tr>
+    <tr><td>Change model when a criterion is beaten, not when a name is new</td><td>Upgrading on release cadence</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Your criteria have been stable across this whole workspace: small active parameter count, few KV
+heads, at or above 4 bits, reliable tool calling, permissive licence. Those did not change when
+Ornith replaced Qwen3-30B-A3B at the top of your list, and they will not change with the next
+release either.</p>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <span class="qnum">Question 1</span>
+  <p class="q">Why did local-tier models converge on sparse MoE architectures?</p>
+  <div class="options">
+    <button class="opt" data-correct>Capacity is cheaper than bandwidth</button>
+    <button class="opt">Sparse models train much faster</button>
+    <button class="opt">Dense models cannot scale further</button>
+    <button class="opt">Quantization works better on them</button>
+  </div>
+  <div class="explain">
+    <strong>Capacity is cheaper than bandwidth.</strong> RAM is comparatively easy to add; memory
+    bandwidth is not. MoE buys capability with parameters that are stored but not read per token,
+    which is precisely the resource local machines have spare. Lesson 1, expressed as an
+    architectural trend.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 2</span>
+  <p class="q">Current models dropped from 8 KV heads to 2. What did that buy?</p>
+  <div class="options">
+    <button class="opt" data-correct>Much cheaper long context</button>
+    <button class="opt">Faster token generation</button>
+    <button class="opt">Smaller weight files</button>
+    <button class="opt">Better reasoning accuracy</button>
+  </div>
+  <div class="explain">
+    <strong>Cheaper long context.</strong> KV heads multiply directly into cache bytes per token —
+    80 KB on Ornith-35B-A3B versus 320 KB on Llama 3.3 70B. Decode speed comes from active parameter
+    count, and weight file size is unaffected.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 3</span>
+  <p class="q">A repo contains an <code>MTP/</code> directory. What are you being offered?</p>
+  <div class="options">
+    <button class="opt" data-correct>Speculative decoding drafts</button>
+    <button class="opt">A multimodal projector</button>
+    <button class="opt">Alternative quantizations</button>
+    <button class="opt">Fine-tuning adapters</button>
+  </div>
+  <div class="explain">
+    <strong>Speculative decoding draft heads.</strong> Multi-token prediction modules trained
+    alongside the model to guess several tokens ahead, which the main model then verifies in one
+    pass. Free speed — but only if you configure it. A vision projector is <code>mmproj</code>.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 4</span>
+  <p class="q">When should you switch the model your harness uses?</p>
+  <div class="options">
+    <button class="opt" data-correct>When criteria are beaten</button>
+    <button class="opt">When benchmarks show gains</button>
+    <button class="opt">On each major release</button>
+    <button class="opt">When the community migrates</button>
+  </div>
+  <div class="explain">
+    <strong>When your criteria are beaten.</strong> Small active count, few KV heads, ≥4 bits,
+    reliable tool calls on your schemas, workable licence. Ornith displaced Qwen3-30B-A3B because it
+    beat those, not because it was newer — and a release that beats none of them is not an upgrade
+    regardless of its benchmark table.
+  </div>
+</div>
+
+<div class="scoreboard" data-scoreboard></div>
+
+<div class="ask">
+  <strong>Your teacher is one message away.</strong> Worth asking: "run the Lesson 14 pass on
+  Ornith-35B-A3B's GGUF quants", "which of these actually do tool calling well?", or "help me build
+  an eval set from my pi transcripts".
+</div>
+
+<nav class="footer-nav">
+  <strong>Workspace</strong>
+  <ul>
+    <li><a href="../index.html">Workspace index — all lessons</a></li>
+    <li><a href="0014-reading-a-model-card.html">Lesson 14 · Reading a Model Card</a></li>
+    <li><a href="../reference/napkin-math.html">Reference · Napkin math cheat sheet</a></li>
+    <li><a href="../GLOSSARY.md">Glossary</a> · <a href="../RESOURCES.md">Resources</a> · <a href="../MISSION.md">Mission</a></li>
+  </ul>
+</nav>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

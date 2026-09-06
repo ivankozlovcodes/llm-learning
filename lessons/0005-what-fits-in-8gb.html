@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 5 · What Fits in 8 GB</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+<link rel="stylesheet" href="../assets/calc.css">
+</head>
+<body>
+<div class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 5 · Local LLM Fluency</p>
+  <h1>What Fits in 8 GB</h1>
+  <p class="standfirst">The machine in your bag, not the one on your desk. Four lessons of theory
+  arrive at one uncomfortable number — and it is smaller than the models you picked.</p>
+  <div class="meta">
+    <span>~15 minutes</span>
+    <span>Prerequisites: <a href="0001-the-bandwidth-rule.html">1</a>, <a href="0003-the-cache-has-a-price.html">3</a></span>
+    <span><a href="../MISSION.md">Mission</a> · <a href="../GLOSSARY.md">Glossary</a> · <a href="../reference/napkin-math.html">Cheat sheet</a></span>
+  </div>
+</header>
+
+<p>Everything so far has been sized against a 64 GB machine. The laptop you actually have with you
+has 8 GB, and that is not a smaller version of the same problem — it is a different problem, where
+the KV cache stops being a line item and becomes a third of the budget.</p>
+
+<div class="keystone">
+  <span class="label">The one idea</span>
+  <p>On an 8 GB Mac your <strong>real budget is about 4.2 GB</strong>, not 8. macOS takes the rest,
+  and unlike a discrete GPU there is no separate pool to fall back on — the operating system and
+  the model are competing for the same bytes.</p>
+  <p>Everything below follows from that one number.</p>
+</div>
+
+<h2>The machine, precisely</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Spec</th><th class="num">Value</th><th>Consequence</th></tr></thead>
+  <tbody>
+    <tr><td>Memory</td><td class="num">8 GB unified</td><td>Shared with the OS, no fallback pool</td></tr>
+    <tr><td>Bandwidth</td><td class="num">68.25 GB/s</td><td>Sets decode speed — see below</td></tr>
+    <tr><td>macOS + a browser and terminal</td><td class="num">~3–3.5 GB</td><td>Non-negotiable overhead</td></tr>
+    <tr><td><strong>Practical model budget</strong></td><td class="num"><strong>~4.2 GB</strong></td><td>Weights <em>and</em> KV cache, together</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="sidenote">
+  <strong>A number you have seen before.</strong> 68.25 GB/s is, to within a rounding error, the
+  <a href="0004-the-tops-trap.html">Jetson Orin Nano's 68 GB/s</a>. Your travel laptop and the
+  $249 edge device sit in the same bandwidth class. The Mac wins on usable memory and on not
+  needing a separate host — but the token rates you can expect are the same order.
+</div>
+
+<h2>Your two candidates, measured</h2>
+
+<p>You found <code>Ornith-1.5-9B</code> and <code>Qwen3.8-27B</code> and concluded both fit. Both
+are real models — I checked — but the file sizes say otherwise. Weights plus an 8k-token cache,
+against a 4.2 GB budget:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Model file</th><th class="num">Weights</th><th class="num">KV @ 8k</th><th class="num">Total</th><th>Verdict</th></tr></thead>
+  <tbody>
+    <tr><td>Qwen3-4B-Instruct Q4_K_M</td><td class="num">2.50</td><td class="num">1.21</td><td class="num">3.71</td><td><strong>Fits</strong></td></tr>
+    <tr><td>Qwen3-4B-Instruct Q8_0</td><td class="num">4.28</td><td class="num">1.21</td><td class="num">5.49</td><td>Over by 1.3</td></tr>
+    <tr><td>Qwen3-8B UD-Q3_K_XL</td><td class="num">4.31</td><td class="num">1.21</td><td class="num">5.52</td><td>Over by 1.3</td></tr>
+    <tr><td><strong>Ornith-1.5-9B Q4_K_M</strong></td><td class="num">5.78</td><td class="num">1.07</td><td class="num">6.85</td><td>Over by 2.7</td></tr>
+    <tr><td><strong>Qwen3.8-27B UD-IQ1_S</strong></td><td class="num">6.19</td><td class="num">2.15</td><td class="num">8.34</td><td>Over by 4.1</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Gigabytes. File sizes read from the Hugging Face API; KV geometry from each model's published <code>config.json</code>. Ornith-9B: 32 layers, 4 KV heads, head-dim 256 → 128 KB/token. Qwen3.8-27B: 64 layers, 4 KV heads, head-dim 256 → 256 KB/token.</span>
+
+<p>The 27B at "1-bit" is the furthest from fitting of anything on the list — its weights alone
+exceed the whole budget, and its cache is the largest per token of any model here. Two intuitions
+collided: <em>1-bit sounds tiny</em> and <em>27B is only three times 9B</em>. Neither survives
+contact with the arithmetic.</p>
+
+<div class="note">
+  <span class="tag">The name is not the number</span>
+  <p><code>UD-IQ1_S</code> is <strong>1.81 effective bits per weight</strong>, not 1. Derived:
+  the BF16 files total 54.7 GB, so at 2 bytes per parameter the model is 27.3B parameters;
+  6.19 GB × 8 ÷ 27.3B = 1.81. Lesson 6 is entirely about why the label and the number differ,
+  and what you give up down there.</p>
+</div>
+
+<h2>The context gap</h2>
+
+<p>Qwen3-4B advertises a <strong>262,144-token</strong> context window. On this machine, after 2.50
+GB of weights, you have ~1.7 GB left. At 144 KB per token:</p>
+
+<div class="formula">
+  1.7 GB ÷ 144 KB per token  =  <span class="num">~12,000 tokens</span>
+  <span class="cap">4.6% of the advertised window</span>
+</div>
+
+<p>This is the same shape as the Orin Nano's 12k in Lesson 4, and it is not a defect in either
+machine. Context windows are a property of the <em>model</em>; how much of one you can hold is a
+property of <em>your memory</em>. The two are advertised together and have almost nothing to do
+with each other.</p>
+
+<div class="calc" data-kvcalc data-model="q4b" data-machine="m1_8gb"></div>
+
+<h2>What going over actually looks like</h2>
+
+<p>Exceeding the budget does not produce an error. macOS compresses memory, then swaps to SSD, and
+the model keeps running — at a fraction of the speed. Lesson 1's rule tells you why: your effective
+bandwidth stops being 68 GB/s and becomes SSD bandwidth, which is one to two orders of magnitude
+lower.</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Situation</th><th class="num">Effective decode</th><th>How it feels</th></tr></thead>
+  <tbody>
+    <tr><td>Qwen3-4B Q4_K_M, fits</td><td class="num">~18 tok/s</td><td>Faster than you read</td></tr>
+    <tr><td>Same model, memory pressure</td><td class="num">~5–8 tok/s</td><td>Sluggish, fans audible</td></tr>
+    <tr><td>Over budget, actively swapping</td><td class="num">&lt;1 tok/s</td><td>Looks broken, is not</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The diagnostic: if a model that <em>should</em> hit the ceiling from Lesson 1 is running an order
+of magnitude below it, you are not underpowered, you are over budget. Check memory pressure before
+you blame the hardware or the quantization.</p>
+
+<h2>The shortlist</h2>
+
+<p>68.25 GB/s ÷ weights = the ceiling; ~65% of that is realistic on Apple Silicon.</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>File</th><th class="num">Size</th><th class="num">Ceiling</th><th class="num">Realistic</th><th>Use for</th></tr></thead>
+  <tbody>
+    <tr><td><code>Qwen3-4B-Instruct-2507-Q4_K_M</code></td><td class="num">2.50</td><td class="num">27 t/s</td><td class="num">~18 t/s</td><td>The default. Tool calling, agent work.</td></tr>
+    <tr><td><code>gemma-3-4b-it-Q4_K_M</code></td><td class="num">2.49</td><td class="num">27 t/s</td><td class="num">~18 t/s</td><td>A second family to compare against.</td></tr>
+    <tr><td><code>Qwen3-4B-Instruct-2507-Q2_K</code></td><td class="num">1.67</td><td class="num">41 t/s</td><td class="num">~27 t/s</td><td>Lesson 6's degradation experiment.</td></tr>
+    <tr><td><code>Qwen3-4B-Instruct-2507-UD-IQ1_S</code></td><td class="num">1.08</td><td class="num">63 t/s</td><td class="num">~30 t/s*</td><td>Seeing what 2 bpw costs.</td></tr>
+    <tr><td><code>Qwen3-4B-Instruct-2507-Q8_0</code></td><td class="num">4.28</td><td class="num">16 t/s</td><td class="num">~10 t/s</td><td>Near-lossless reference. Short context only.</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">*i-quants carry extra dequantization cost, so IQ1_S will not reach the bandwidth ceiling the way a k-quant does — another Lesson 6 topic.</span>
+
+<h2>Three levers when it does not fit</h2>
+
+<h3>1. Quantize the cache, not just the weights</h3>
+<p><code>--cache-type-k q8_0 --cache-type-v q8_0</code> halves the cache. On Qwen3-4B that takes
+16k of context from 2.42 GB to 1.21 GB — the difference between 8k and 16k of usable context for
+free. On a memory-starved machine this is the highest-value flag there is.</p>
+
+<h3>2. Cap the context deliberately</h3>
+<p>Most runtimes allocate the cache for the context size you declare, up front. Asking for 262k on
+this machine fails at load time or silently reserves memory you cannot spare. Set it to what you
+will actually use — 8k or 16k — and the budget stops being a mystery.</p>
+
+<h3>3. Prefer a smaller model at higher precision</h3>
+<p>Qwen3-8B at Q3 (4.31 GB) and Qwen3-4B at Q8 (4.28 GB) are the same size and neither fits. But
+between <em>4B at Q4</em> and <em>8B at Q2</em> at around 2.5 GB, the smaller-model-higher-precision
+side generally wins — and Lesson 6 shows you the curve that explains why.</p>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <span class="qnum">Question 1</span>
+  <p class="q">Your Mac has 8 GB of unified memory. Roughly how much can a model actually use?</p>
+  <div class="options">
+    <button class="opt" data-correct>About four gigabytes</button>
+    <button class="opt">About seven gigabytes</button>
+    <button class="opt">About eight gigabytes</button>
+    <button class="opt">About six gigabytes</button>
+  </div>
+  <div class="explain">
+    <strong>About four.</strong> macOS plus a browser and terminal takes 3–3.5 GB, and unified
+    memory means there is no separate pool to spill into. That 4.2 GB has to cover weights and the
+    KV cache together — which is the constraint most model recommendations quietly ignore.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 2</span>
+  <p class="q">A 6.19 GB model loads on an 8 GB machine and runs at 0.4 tok/s. What is happening?</p>
+  <div class="options">
+    <button class="opt" data-correct>Swapping to disk</button>
+    <button class="opt">Quantization is broken</button>
+    <button class="opt">Thermal throttling occurred</button>
+    <button class="opt">Context is too long</button>
+  </div>
+  <div class="explain">
+    <strong>Swapping.</strong> The bandwidth rule predicts 68 ÷ 6.19 ≈ 11 tok/s ceiling. Running
+    25× below that means the bytes are no longer coming from RAM — effective bandwidth has become
+    SSD bandwidth. No error is raised, which is exactly why this gets misdiagnosed.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 3</span>
+  <p class="q">Qwen3-4B advertises a 262k context window. How much fits on this machine after weights?</p>
+  <div class="options">
+    <button class="opt" data-correct>Roughly twelve thousand</button>
+    <button class="opt">Roughly sixty thousand</button>
+    <button class="opt">The full amount</button>
+    <button class="opt">Roughly two thousand</button>
+  </div>
+  <div class="explain">
+    <strong>~12,000 tokens</strong>, under 5% of the advertised window. The context window is a
+    property of the model; how much of it you can hold is a property of your memory. They are
+    printed on the same spec sheet and are almost unrelated.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 4</span>
+  <p class="q">Memory-starved and needing more context. Which single change buys the most?</p>
+  <div class="options">
+    <button class="opt" data-correct>Quantize the KV cache</button>
+    <button class="opt">Lower the weight quantization</button>
+    <button class="opt">Reduce the batch size</button>
+    <button class="opt">Disable the mmproj file</button>
+  </div>
+  <div class="explain">
+    <strong>Quantize the KV cache.</strong> Q8 halves it at negligible quality cost, and at long
+    context the cache is the part that is growing. Dropping weight precision instead costs quality
+    on every token to solve a problem that only appears at length — the wrong trade for the
+    symptom.
+  </div>
+</div>
+
+<div class="scoreboard" data-scoreboard></div>
+
+<h2>Where this goes next</h2>
+
+<p>Twice now the answer has been "use a lower quantization" — and twice I have waved at a quality
+cost without pricing it. That is the gap <a href="0006-the-quantization-ladder.html">Lesson 6</a>
+closes: what the quant names actually mean, where the quality curve bends, why <code>IQ1_S</code>
+is 1.81 bits rather than 1, and whether a bigger model squeezed harder beats a smaller model
+treated gently.</p>
+
+<div class="note">
+  <span class="tag">If you downloaded the ladder</span>
+  <p>Lesson 6 is much better with the four Qwen3-4B files side by side — IQ1_S, Q2_K, Q4_K_M, Q8_0.
+  Same model, four precisions, all runnable one at a time on this machine. Reading about
+  degradation is worth far less than hearing it.</p>
+</div>
+
+<div class="ask">
+  <strong>Your teacher is one message away.</strong> Worth asking: "how do I check memory pressure
+  on macOS?", "can I raise the GPU memory limit on an 8 GB Mac?", or "what would routing between
+  this 4B and the 64 GB machine's model look like in pi?" — that last one is Lesson 12.
+</div>
+
+<div class="addendum">
+  <span class="label">Addendum · the 48 GB M4</span>
+  <span class="when">Added 2026-09-05 — the lesson above stands as written; this is what a third machine changes.</span>
+  <p>A <strong>48 GB M4 MacBook Pro</strong> now travels alongside the 8 GB M1. Its practical budget
+  is <strong>~36 GB</strong> — roughly 75% of installed memory, the same convention Lesson 3 uses for
+  the 64 GB machine. That is <strong>8.6× this lesson's 4.2 GB</strong>, and it changes the answer to
+  every question on this page.</p>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Model</th><th class="num">Q4_K_M</th><th class="num">8 GB M1</th><th class="num">48 GB M4</th></tr></thead>
+    <tbody>
+      <tr><td>Qwen3-4B-Instruct-2507</td><td class="num">2.50 GB</td><td class="num">fits, ~8k ctx</td><td class="num">fits trivially</td></tr>
+      <tr class="hi"><td><strong>Ornith-1.5-35B-A3B</strong></td><td class="num">21.71 GB</td><td class="num">no</td><td class="num"><strong>fits, 14.29 GB spare</strong></td></tr>
+      <tr><td>Qwen3.8-27B</td><td class="num">16.46 GB</td><td class="num">no</td><td class="num">fits</td></tr>
+      <tr><td>Llama 3.3 70B</td><td class="num">42.5 GB</td><td class="num">no</td><td class="num">no — over by 6.5 GB</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p><strong>The lesson's central tension disappears.</strong> On 4.2 GB the KV cache is a third of
+  the budget and every context setting is a fight. On the M4, Ornith's 80 KB/token buys
+  <strong>178,625 tokens</strong> of cache from the 14.29 GB left over — more context than the model
+  can use well. The constraint stops being memory and becomes something else entirely, which is what
+  <a href="0018-the-context-window.html">Lesson 18's</a> addendum is about.</p>
+  <p>Two things survive intact. The <em>method</em> — weights plus KV against a budget — is
+  unchanged; only the budget moved. And the 8 GB machine is still in the bag, so every number above
+  the fold still applies on the days you use it. Full arithmetic in <a href="../reference/three-machines.html">Three Machines</a>.</p>
+</div>
+
+<nav class="footer-nav">
+  <strong>Workspace</strong>
+  <ul>
+    <li><a href="0001-the-bandwidth-rule.html">Lesson 1 · The Bandwidth Rule</a></li>
+    <li><a href="0002-the-cost-of-a-turn.html">Lesson 2 · The Cost of a Turn</a></li>
+    <li><a href="0003-the-cache-has-a-price.html">Lesson 3 · The Cache Has a Price</a></li>
+    <li><a href="0004-the-tops-trap.html">Lesson 4 · The TOPS Trap</a></li>
+    <li><a href="../reference/napkin-math.html">Reference · Napkin math cheat sheet</a></li>
+    <li><a href="../GLOSSARY.md">Glossary</a> · <a href="../RESOURCES.md">Resources</a> · <a href="../MISSION.md">Mission</a></li>
+  </ul>
+</nav>
+
+</div>
+<script src="../assets/quiz.js"></script>
+<script src="../assets/kvcalc.js"></script>
+</body>
+</html>

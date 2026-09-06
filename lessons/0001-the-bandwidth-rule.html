@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 1 · The Bandwidth Rule</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+<link rel="stylesheet" href="../assets/calc.css">
+</head>
+<body>
+<div class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 1 · Local LLM Hardware</p>
+  <h1>The Bandwidth Rule</h1>
+  <p class="standfirst">One division problem predicts how fast any model will run on any machine.
+  Learn it and most of the hardware market sorts itself out in your head.</p>
+  <div class="meta">
+    <span>~12 minutes</span>
+    <span>Prerequisite: none</span>
+    <span><a href="../MISSION.md">Mission</a> · <a href="../GLOSSARY.md">Glossary</a> · <a href="../reference/napkin-math.html">Cheat sheet</a></span>
+  </div>
+</header>
+
+<p>You already know that a $1,000 M1 Max beat a $4,699 DGX Spark on Llama 70B. That result looks
+like a fluke until you know the rule underneath it — and then it looks inevitable. This lesson
+teaches the rule.</p>
+
+<div class="keystone">
+  <span class="label">The one idea</span>
+  <p>To generate <strong>one token</strong>, the machine must read <strong>every active weight
+  in the model</strong> out of memory — and do only about two arithmetic operations per weight it
+  reads. Almost no maths, an enormous amount of data movement.</p>
+  <p>So the speed of token generation is not set by how fast the chip computes. It is set by how
+  fast the chip can <em>pull bytes out of memory</em>.</p>
+</div>
+
+<p>Every modern accelerator has vastly more compute than memory bandwidth. A matrix–vector
+multiply does one multiply-add — 2 FLOPs — per matrix element read. The arithmetic finishes long
+before the next bytes arrive, and the compute units sit idle waiting. This is what people mean
+when they call decoding <strong>memory-bandwidth bound</strong>.</p>
+<span class="cite">Source: Arseny Kapoulkine, <a href="https://zeux.io/2024/03/15/llm-inference-sol/">LLM inference speed of light</a> (2024).</span>
+
+<h2>The formula</h2>
+
+<div class="formula">
+  <span class="num">tokens/sec</span>  =  memory bandwidth (GB/s)  ÷  bytes read per token (GB)
+  <span class="cap">the ceiling — no implementation beats this</span>
+</div>
+
+<p>And the bytes read per token is just the size of the weights you have to touch:</p>
+
+<div class="formula">
+  bytes per token (GB)  =  active parameters (billions)  ×  bits per weight  ÷  8
+  <span class="cap">for a dense model, active parameters = all of them</span>
+</div>
+
+<p>That is the whole model. Two divisions and a multiply. Everything else in this lesson is a
+consequence of it.</p>
+
+<h2>Worked example: the machine you were quoted</h2>
+
+<p>MacBook Pro M1 Max, 64 GB, <strong>400 GB/s</strong> of memory bandwidth. Run Llama 3.3 70B at
+<code>Q4_K_M</code> — roughly 4.9 bits per weight once quantization metadata is counted, so about
+<strong>43 GB</strong> of weights.</p>
+
+<div class="formula">
+  400 GB/s ÷ 43 GB = <span class="num">9.3 tokens/sec</span>
+  <span class="cap">theoretical ceiling</span>
+</div>
+
+<p>Real implementations do not hit the ceiling. llama.cpp typically achieves 58–82% of peak
+bandwidth depending on the quantization and the backend. At ~80%, that predicts
+<strong>~7.5 tok/s</strong> — and community measurements on M1 Max 70B Q4 land in the 7–9 tok/s
+range. The napkin got it right.</p>
+<span class="cite">Efficiency figures: <a href="https://zeux.io/2024/03/15/llm-inference-sol/">zeux.io</a>. Measurements: <a href="https://github.com/ggml-org/llama.cpp/discussions/4167">llama.cpp Apple Silicon benchmark thread</a>.</span>
+
+<div class="reveal">
+  <span class="tag">Predict before you look</span>
+  <p class="prompt">Now the DGX Spark: <strong>273 GB/s</strong>, running the same 70B model but at
+  FP8 — 8 bits per weight, so <strong>70.6 GB</strong> of weights. Do the division in your head.
+  What is the ceiling, and what would you expect measured?</p>
+  <button class="show-answer">Reveal</button>
+  <div class="answer">
+    <p>273 ÷ 70.6 = <strong>3.9 tok/s ceiling</strong>. At ~70% efficiency: <strong>~2.7 tok/s</strong>.</p>
+    <p>LMSYS measured the DGX Spark at exactly <strong>2.7 tok/s</strong> decode on Llama 70B FP8.
+    You just predicted a $4,699 machine's performance with one division.</p>
+    <span class="cite">Source: <a href="https://www.lmsys.org/blog/2025-10-13-nvidia-dgx-spark/">LMSYS, NVIDIA DGX Spark In-Depth Review</a>.</span>
+  </div>
+</div>
+
+<h2>Try it on anything</h2>
+
+<p>Change the machine, the model, the quantization. Watch which lever actually moves the number —
+that intuition is the point of the widget, more than any single result it prints.</p>
+
+<div class="calc" data-calc data-machine="m1max64" data-model="l70b" data-quant="q4km"></div>
+
+<h2>Three consequences worth internalising</h2>
+
+<h3>1. Quantization is a speed feature, not just a memory feature</h3>
+
+<p>Everyone learns quantization as "make the model fit." But look at the formula: bits per weight
+is in the numerator of bytes-per-token. Halving the bits halves the bytes read, which
+<em>doubles</em> the token rate. Going from F16 to Q4_K_M is roughly a 3.3× speedup, not merely a
+3.3× size reduction. Try it in the calculator above.</p>
+
+<div class="sidenote">
+  <strong>Naming:</strong> in <code>Q4_K_M</code>, the <code>Q4</code> is 4-bit, the <code>K</code>
+  is the k-quant block scheme, and <code>M</code> is the medium-quality variant of it. Because
+  k-quants store per-block scales alongside the weights, the <em>effective</em> bits per weight is
+  non-integer — about 4.5–4.9 depending on the model's vocabulary size.
+  <a href="https://github.com/ggml-org/llama.cpp/blob/master/tools/quantize/README.md">Official quant list →</a>
+</div>
+
+<h3>2. Mixture-of-Experts breaks the rule in your favour</h3>
+
+<p>An MoE model routes each token through a small subset of its parameters. Only those get read.
+gpt-oss-120b has <strong>116.8B total parameters but 5.1B active</strong> per token — so it
+occupies ~62 GB of memory but only reads ~2.7 GB per token. That is why a 120B model runs an order
+of magnitude faster than a 70B one on the same box.</p>
+
+<p>Restate the formula precisely: <strong>capacity is set by total parameters, speed is set by
+active parameters.</strong> Confusing the two is the single most common error in local-LLM
+discussion.</p>
+
+<div class="sidenote">
+  <strong>Honest caveat:</strong> MoE achieves a <em>lower</em> fraction of peak bandwidth than
+  dense models, because the active experts are scattered through memory rather than read in one
+  sweep. The formula still gives the right ceiling; just expect a worse efficiency factor.
+</div>
+
+<h3>3. More memory does not mean more speed</h3>
+
+<p>These are two independent specifications and the market constantly conflates them. The Spark
+has 2.7× the usable memory of the M1 Max and 0.68× the bandwidth. It can <em>hold</em> models the
+Mac cannot load at all, and it will generate tokens <em>slower</em> on every model both can hold.</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Machine</th><th class="num">Bandwidth</th><th class="num">Usable memory</th><th>What that buys</th></tr></thead>
+  <tbody>
+    <tr><td>MacBook Pro M1 Max 64 GB</td><td class="num">400 GB/s</td><td class="num">~48 GB</td><td>Fast on anything up to ~45 GB</td></tr>
+    <tr><td>NVIDIA DGX Spark</td><td class="num">273 GB/s</td><td class="num">~110 GB</td><td>Holds giants, generates slowly</td></tr>
+    <tr><td>RTX 4090</td><td class="num">1008 GB/s</td><td class="num">~23 GB</td><td>Very fast on small models only</td></tr>
+    <tr><td>Mac Studio M4 Max 128 GB</td><td class="num">546 GB/s</td><td class="num">~96 GB</td><td>Both, at a price</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Read that table as two separate axes and the entire local-hardware market becomes legible.
+A machine is a point on a capacity/bandwidth plane, and your workload decides which axis you are
+actually shopping on.</p>
+
+<h2>Check yourself</h2>
+
+<p>Answer from memory before scrolling back. Getting one wrong here is more useful than
+re-reading the lesson.</p>
+
+<div class="quiz">
+  <span class="qnum">Question 1</span>
+  <p class="q">You switch a model from 8-bit to 4-bit quantization. What happens to decode speed?</p>
+  <div class="options">
+    <button class="opt" data-correct>Roughly doubles</button>
+    <button class="opt">Roughly halves</button>
+    <button class="opt">Barely changes</button>
+    <button class="opt">Roughly quadruples</button>
+  </div>
+  <div class="explain">
+    <strong>Roughly doubles.</strong> Bits per weight sits in the numerator of bytes-per-token.
+    Half the bits means half the bytes read per token, so twice the tokens per second — for the
+    same bandwidth. The memory saving is the well-known half; the speed-up is the half people forget.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 2</span>
+  <p class="q">Machine A: 128 GB memory, 273 GB/s. Machine B: 64 GB memory, 400 GB/s. Which generates tokens faster on a 40 GB model?</p>
+  <div class="options">
+    <button class="opt">Machine A wins</button>
+    <button class="opt" data-correct>Machine B wins</button>
+    <button class="opt">They tie exactly</button>
+    <button class="opt">Cannot be determined</button>
+  </div>
+  <div class="explain">
+    <strong>Machine B.</strong> Both hold the model, so capacity is irrelevant and only bandwidth
+    decides: 400 ÷ 40 = 10 tok/s versus 273 ÷ 40 = 6.8 tok/s. This is the M1 Max versus DGX Spark
+    result in the abstract — and the reason the cheap machine won.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 3</span>
+  <p class="q">gpt-oss-120b has 116.8B total parameters and 5.1B active per token. Which figure sets decode speed?</p>
+  <div class="options">
+    <button class="opt" data-correct>The active subset</button>
+    <button class="opt">The total weights</button>
+    <button class="opt">Both read equally</button>
+    <button class="opt">Neither, compute bound</button>
+  </div>
+  <div class="explain">
+    <strong>The active subset.</strong> Only the routed experts are read per token, so 5.1B sets
+    the speed. The full 116.8B still has to <em>live</em> in memory, so it sets the capacity
+    requirement. Capacity from total, speed from active — keep them apart.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 4</span>
+  <p class="q">A 24 GB model on a 960 GB/s GPU. What is the theoretical ceiling?</p>
+  <div class="options">
+    <button class="opt" data-correct>40 tokens/sec</button>
+    <button class="opt">23 tokens/sec</button>
+    <button class="opt">80 tokens/sec</button>
+    <button class="opt">12 tokens/sec</button>
+  </div>
+  <div class="explain">
+    <strong>40 tok/s.</strong> 960 ÷ 24 = 40. Expect roughly 25–33 measured, once you apply a
+    60–80% efficiency factor. If you measured 8 tok/s on this setup, something is wrong —
+    the model has probably spilled out of VRAM into system memory.
+  </div>
+</div>
+
+<div class="scoreboard" data-scoreboard></div>
+
+<h2>What this rule does not explain</h2>
+
+<p>Deliberately, the lesson modelled one thing: weights, one token at a time. Three gaps remain,
+and each is a later lesson.</p>
+
+<ul>
+  <li><strong>Prefill.</strong> Reading your prompt is a different regime entirely — compute-bound,
+  not bandwidth-bound. It is why the Spark does 803 tok/s of prefill on the same model where it
+  decodes at 2.7, and why "slow" and "fast" swap places for long-context work.</li>
+  <li><strong>The KV cache.</strong> Context is not free; it consumes memory and adds bandwidth
+  traffic that grows with sequence length. Your headroom is smaller than the calculator suggests.</li>
+  <li><strong>Batching.</strong> Serving many requests at once reads the weights <em>once</em> for
+  the whole batch, which flips decoding from bandwidth-bound to compute-bound. This is the single
+  most important fact for your batch-pipeline workload, and it changes the hardware answer.</li>
+</ul>
+
+<div class="note">
+  <span class="tag">Where this is going</span>
+  <p><a href="0002-the-cost-of-a-turn.html">Lesson 2</a> takes on prefill versus decode, because your CLI
+  agent harness workload lives or dies on it — and because it turns out to partly reverse the
+  verdict above. Batching gets folded in there as a note rather than its own lesson, since you are
+  the sole user and concurrency is optional for you.</p>
+</div>
+
+<div class="source">
+  <span class="tag">Read this before lesson 2</span>
+  <span class="title">LLM inference speed of light — Arseny Kapoulkine</span>
+  <p>Twenty minutes, and the highest-value thing you can read on this topic. It derives everything
+  above from first principles and then measures real implementations against the ceiling. If one
+  external link from this workspace gets read, make it this one.</p>
+  <p style="margin-top:0.6rem"><a href="https://zeux.io/2024/03/15/llm-inference-sol/">zeux.io/2024/03/15/llm-inference-sol/</a></p>
+</div>
+
+<div class="ask">
+  <strong>Your teacher is one message away.</strong> If any step above was hand-waved, or you want
+  the rule tested against a specific machine or model you are considering, ask. Good questions to
+  bring back: "why is efficiency only 70%?", "what happens if the model doesn't fit?", "does this
+  apply to image models too?"
+</div>
+
+<nav class="footer-nav">
+  <strong>Workspace</strong>
+  <ul>
+    <li><a href="0002-the-cost-of-a-turn.html">Lesson 2 · The Cost of a Turn</a> — prefill, TTFT, and cache reuse</li>
+    <li><a href="0003-the-cache-has-a-price.html">Lesson 3 · The Cache Has a Price</a> — what the KV cache costs in memory</li>
+    <li><a href="0004-the-tops-trap.html">Lesson 4 · The TOPS Trap</a> — micro PCs, Jetson, and why TOPS misleads</li>
+    <li><a href="../reference/napkin-math.html">Reference · Napkin math cheat sheet</a> — the formulas and constants, printable</li>
+    <li><a href="../GLOSSARY.md">Glossary</a> — canonical definitions for this workspace</li>
+    <li><a href="../RESOURCES.md">Resources</a> — the trusted sources behind every claim here</li>
+    <li><a href="../MISSION.md">Mission</a> — why we are doing this</li>
+  </ul>
+</nav>
+
+</div>
+<script src="../assets/quiz.js"></script>
+<script src="../assets/calc.js"></script>
+</body>
+</html>

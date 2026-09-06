@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 16 · Fine-Tuning and Soup</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+<link rel="stylesheet" href="../assets/calc.css">
+</head>
+<body>
+<div class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 16 · Local LLM Fluency</p>
+  <h1>Fine-Tuning and Soup</h1>
+  <p class="standfirst">Fifteen lessons have treated the weights as fixed. They are not. Changing
+  them is a memory problem you already know how to price — and averaging two changed models
+  together is the cheapest win in the whole field.</p>
+  <div class="meta">
+    <span>~22 minutes</span>
+    <span>Prerequisite: <a href="0005-what-fits-in-8gb.html">Lesson 5</a>, <a href="0008-tool-calling.html">Lesson 8</a></span>
+    <span><a href="../MISSION.md">Mission</a> · <a href="../GLOSSARY.md">Glossary</a> · <a href="../reference/finetuning-and-merging.html">Cheat sheet</a></span>
+  </div>
+</header>
+
+<div class="keystone">
+  <span class="label">The one idea</span>
+  <p>A training run holds <strong>four things</strong> in memory: base weights, gradients, optimizer
+  state, and activations. Full fine-tuning pays for all four. <strong>LoRA deletes two of them and
+  quantization shrinks the third</strong> — which is why a 1.7B fine-tune that needs 20 GB the
+  obvious way needs about 2.5 GB the sensible way, and fits on your travel laptop.</p>
+  <p>And once you have trained two adapters, you do not have to choose between them. Averaging
+  weights is free, and it usually beats picking the best one.</p>
+</div>
+
+<h2>First: you probably should not</h2>
+
+<p>Fine-tuning is the most over-reached-for tool in local LLM work. Before spending a Saturday on it,
+check that the thing you want is not already available for nothing:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>What you want</th><th>Reach for</th><th>Why not fine-tuning</th></tr></thead>
+  <tbody>
+    <tr><td>Well-formed JSON tool calls</td><td>GBNF grammar / <code>json_schema</code> (<a href="0008-tool-calling.html">Lesson 8</a>)</td><td>Constrained decoding makes malformed output <em>impossible</em>. Training only makes it unlikely.</td></tr>
+    <tr><td>Knowledge of your codebase</td><td>Retrieval, or just reading the files</td><td>Weights are a bad database. They go stale the moment you commit.</td></tr>
+    <tr><td>A different persona or house style</td><td>System prompt</td><td>Free, instantly editable, and it survives your next model upgrade.</td></tr>
+    <tr><td>Fewer stray tokens before a call</td><td>Lazy grammar + sampler settings (<a href="0007-templates-and-sampling.html">Lesson 7</a>)</td><td>You are fighting the template, not the weights.</td></tr>
+    <tr class="hi"><td><strong>Which tool to call, and when to stop</strong></td><td><strong>Fine-tuning</strong></td><td>This is <em>behaviour</em> under your own tool schemas. No prompt reliably buys it from a 1.7B model.</td></tr>
+    <tr class="hi"><td><strong>A tiny model that acts like a bigger one on one narrow job</strong></td><td><strong>Fine-tuning</strong></td><td>The only way to move the quality/size curve for a job you can demonstrate a thousand times.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="sidenote">
+  <strong>The honest research position.</strong> A controlled comparison found that "in the standard
+  low-rank settings, LoRA substantially underperforms full finetuning" on programming and mathematics
+  — but that "LoRA better maintains the base model's performance on tasks outside the target domain."
+  For teaching a small model <em>new domain knowledge</em>, LoRA is a weak tool. For nudging
+  <em>behaviour</em> without wrecking everything else, that trade is exactly the one you want.
+  <span class="cite"><a href="https://arxiv.org/abs/2405.09673">Biderman et al., <em>LoRA Learns Less and Forgets Less</em> (arXiv 2405.09673)</a></span>
+</div>
+
+<h2>The four terms</h2>
+
+<p>You have priced inference three times now: weights plus KV cache against a budget. Training adds
+two terms and inflates a third.</p>
+
+<div class="formula">
+  <span class="cap">peak training memory</span><br>
+  <span class="num">base weights</span> <span class="op">+</span>
+  <span class="num">gradients</span> <span class="op">+</span>
+  <span class="num">optimizer state</span> <span class="op">+</span>
+  <span class="num">activations</span>
+</div>
+
+<p><strong>Gradients</strong> are one number per trainable parameter. <strong>Optimizer state</strong>
+is two more for AdamW — a running mean and a running variance. So the full training state is roughly
+<strong>8 bytes per trainable parameter</strong> in MLX, where optimizer state is created with
+<code>mx.zeros_like(parameter)</code> and therefore inherits the parameter's <code>bfloat16</code>;
+it is <strong>16 bytes</strong> under PyTorch mixed precision, which additionally keeps an fp32
+master copy.
+<span class="cite">MLX optimizer state dtype read from <a href="https://github.com/ml-explore/mlx/blob/main/python/mlx/optimizers/optimizers.py">mlx/optimizers/optimizers.py</a>; the 16-byte figure is the standard mixed-precision Adam accounting from <a href="https://arxiv.org/abs/1910.02054">Rajbhandari et al., ZeRO (arXiv 1910.02054)</a>.</span></p>
+
+<p><strong>Activations</strong> are the intermediate values from the forward pass that the backward
+pass needs. Unlike the other three they scale with <em>batch × sequence length × layers</em>, not
+with parameter count — which is why a fine-tune can fit and then explode when you feed it one long
+example.</p>
+
+<h3>What LoRA actually does</h3>
+
+<p>LoRA freezes the base weights and trains a low-rank correction to selected matrices: for a
+<code>d × k</code> weight, two skinny matrices <code>B</code> (<code>d × r</code>) and <code>A</code>
+(<code>r × k</code>), whose product is added to the frozen original.
+<span class="cite"><a href="https://arxiv.org/abs/2106.09685">Hu et al., <em>LoRA: Low-Rank Adaptation of Large Language Models</em> (arXiv 2106.09685)</a></span></p>
+
+<div class="formula">
+  <span class="cap">trainable parameters per adapted matrix</span><br>
+  <span class="num">r</span> <span class="op">×</span> (<span class="num">d</span> <span class="op">+</span> <span class="num">k</span>)
+</div>
+
+<p>Work it for Qwen3-1.7B at mlx-lm's defaults — rank 8, on <code>q_proj</code> and
+<code>v_proj</code>, in the last 16 layers. Hidden size is 2048; <code>q_proj</code> is 2048→2048 and
+<code>v_proj</code> is 2048→1024, because the model has 16 query heads and only 8 KV heads:</p>
+
+<div class="formula">
+  q_proj: <span class="num">8</span> × (2048 + 2048) <span class="op">=</span> <span class="num">32,768</span><br>
+  v_proj: <span class="num">8</span> × (2048 + 1024) <span class="op">=</span> <span class="num">24,576</span><br>
+  <span class="op">(32,768 + 24,576) × 16 layers  =</span> <span class="num">917,504</span> parameters
+</div>
+
+<p>0.918 M trainable out of 1,720.6 M — <strong>0.053%</strong>. Multiply by 8 bytes and the entire
+gradient-and-optimizer bill is <strong>7 MB</strong>. Two of the four terms have effectively
+vanished.</p>
+
+<div class="sidenote">
+  <strong>Check your arithmetic against the tool.</strong> mlx-lm prints
+  a <code>Trainable parameters:</code> line &mdash; 0.918 M, 0.053% &mdash; before the first iteration. If your
+  hand calculation and that line disagree, one of you has the wrong layer count.
+  <span class="cite">Format string in <a href="https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/tuner/utils.py">mlx_lm/tuner/utils.py</a>. Model geometry from <a href="https://huggingface.co/Qwen/Qwen3-1.7B/blob/main/config.json">Qwen3-1.7B <code>config.json</code></a>.</span>
+</div>
+
+<h3>What QLoRA does</h3>
+
+<p>With gradients and optimizer state gone, the frozen base weights become the floor. QLoRA lowers
+the floor by quantizing them — the base is stored at 4 bits and dequantized on the fly, while the
+adapters stay at full precision. The original paper used it to "finetune a 65B parameter model on a
+single 48GB GPU while preserving full 16-bit finetuning task performance."
+<span class="cite"><a href="https://arxiv.org/abs/2305.14314">Dettmers et al., <em>QLoRA</em> (arXiv 2305.14314)</a></span></p>
+
+<p>The measured file sizes make the effect concrete. These are real
+<code>mlx-community</code> safetensors, not estimates:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Qwen3-1.7B base</th><th class="num">File size</th><th class="num">Bytes/param</th><th>Leaves you</th></tr></thead>
+  <tbody>
+    <tr><td>bf16</td><td class="num">3.441 GB</td><td class="num">2.000</td><td class="num">0.76 GB of your 4.2</td></tr>
+    <tr><td>8-bit</td><td class="num">1.828 GB</td><td class="num">1.063</td><td class="num">2.37 GB</td></tr>
+    <tr class="hi"><td><strong>4-bit</strong></td><td class="num"><strong>0.968 GB</strong></td><td class="num"><strong>0.563</strong></td><td class="num"><strong>3.23 GB</strong></td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Sizes from the Hugging Face file API for <code>mlx-community/Qwen3-1.7B-{bf16,8bit,4bit}</code>. Budget of 4.2 GB from <a href="0005-what-fits-in-8gb.html">Lesson 5</a>. The 4-bit constant of 0.563 bytes/param reproduces Qwen3-0.6B (0.335 GB) and Qwen3-4B (2.263 GB) exactly — it is a constant you can reuse.</span>
+
+<h2>Price your own run</h2>
+
+<p>The calculator applies the four-term model. It starts on the configuration this lesson recommends
+for your 8 GB machine. Change one control at a time and watch which term moves.</p>
+
+<div class="calc" data-trainbudget></div>
+
+<div class="reveal">
+  <span class="tag">Predict first</span>
+  <p class="prompt">Leave everything else alone and switch <strong>base precision</strong> from 4-bit
+  to bf16. The base weights grow by 2.47 GB. Does the run still fit in 4.2 GB — and which single
+  other control would you change to rescue it?</p>
+  <button class="show-answer">Reveal</button>
+  <div class="answer">
+    <p><strong>No — it lands around 5.0 GB, roughly 0.8 GB over.</strong> The activation term is
+    untouched at ~1.14 GB, the trainable state is still 7 MB. All the damage is in one term.</p>
+    <p>The instinctive fix is a smaller batch, but batch is already 1. The control that rescues it is
+    <strong>gradient checkpointing</strong>: it drops activations from ~1.14 GB to ~140 MB by storing
+    only layer boundaries and recomputing the rest, at the cost of an extra forward pass. That gets
+    you to ~4.0 GB — a fit, and slower than simply staying at 4-bit. Which is the lesson: on this
+    machine, quantizing the base is the cheapest lever, and you reach for the others afterwards.</p>
+  </div>
+</div>
+
+<h2>Hands on: a tool-calling fine-tune in 4.2 GB</h2>
+
+<p>This runs on the 8 GB M1, with a browser open. It is sized so that the interesting part is the
+arithmetic you just did, not the wait.</p>
+
+<h3>1. Install</h3>
+
+<div class="formula mono-block">
+pip install "mlx-lm[train]"
+</div>
+<span class="cite">MLX is Apple-Silicon only, and this is the whole install. <a href="https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/LORA.md">mlx-lm LoRA documentation</a>.</span>
+
+<h3>2. Build a dataset in the <code>tools</code> format</h3>
+
+<p>mlx-lm reads four dataset shapes — <code>chat</code>, <code>tools</code>, <code>completions</code>
+and <code>text</code>. The <code>tools</code> shape is the one that matters here: it carries the tool
+schemas alongside the messages, and mlx-lm renders both through the model's own chat template, so
+you are training on <em>exactly the string the model will see at inference</em> — the point
+<a href="0007-templates-and-sampling.html">Lesson 7</a> made about templates, now on the training
+side.</p>
+
+<p>One example per line in <code>data/train.jsonl</code>, with a <code>data/valid.jsonl</code>
+alongside:</p>
+
+<div class="formula mono-block small">
+{"messages":[{"role":"user","content":"what's in src/"},{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"list_dir","arguments":"{\"path\": \"src\"}"}}]}],"tools":[{"type":"function","function":{"name":"list_dir","description":"List a directory","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}}]}
+</div>
+<span class="cite">Format taken verbatim from <a href="https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/LORA.md#data">LORA.md § Data</a>. Note the <code>arguments</code> field is a JSON <em>string</em>, not an object — the convention differs between model families, so check your target model's template.</span>
+
+<p>The natural source is your own pi transcripts: every successful <code>tool_call</code> in a
+session is a labelled example of the behaviour you want. Two or three hundred lines is enough to
+move a 1.7B model's tool-selection habits. Keep every example short — the activation term is the one
+that scales with sequence length, and one 8k example will cost you more than a hundred 400-token
+ones.</p>
+
+<h3>3. Train</h3>
+
+<div class="formula mono-block">
+mlx_lm.lora \<br>
+&nbsp;&nbsp;--model mlx-community/Qwen3-1.7B-4bit \<br>
+&nbsp;&nbsp;--train \<br>
+&nbsp;&nbsp;--data ./data \<br>
+&nbsp;&nbsp;--batch-size 1 \<br>
+&nbsp;&nbsp;--num-layers 8 \<br>
+&nbsp;&nbsp;--max-seq-length 1024 \<br>
+&nbsp;&nbsp;--mask-prompt \<br>
+&nbsp;&nbsp;--iters 300 \<br>
+&nbsp;&nbsp;--adapter-path ./adapters-a
+</div>
+
+<p>Every flag is a term in the equation:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Flag</th><th>Default</th><th>Term it cuts</th></tr></thead>
+  <tbody>
+    <tr><td><code>--model …-4bit</code></td><td>bf16</td><td>Base weights, 3.44 → 0.97 GB. mlx-lm switches to QLoRA automatically when the model is quantized.</td></tr>
+    <tr><td><code>--batch-size 1</code></td><td>4</td><td>Activations, 4×</td></tr>
+    <tr><td><code>--num-layers 8</code></td><td>16</td><td>Activations <em>and</em> trainable state, 2×</td></tr>
+    <tr><td><code>--max-seq-length 1024</code></td><td>2048</td><td>Activations, 2×</td></tr>
+    <tr><td><code>--mask-prompt</code></td><td>off</td><td>Nothing — but it stops the loss rewarding the model for predicting your prompts, which is not the skill you want</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Defaults from <a href="https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/examples/lora_config.yaml">mlx-lm's example <code>lora_config.yaml</code></a>. The memory levers are exactly those in <a href="https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/LORA.md#memory-issues">LORA.md § Memory Issues</a>, in the order that documentation recommends them.</span>
+
+<div class="note">
+  <span class="tag">If it goes quiet</span>
+  <p>Over-budget training does not crash — <a href="0005-what-fits-in-8gb.html">Lesson 5's</a>
+  failure mode applies unchanged. macOS compresses, then swaps, and your iterations-per-second falls
+  by an order of magnitude while everything still looks fine. Watch memory pressure in Activity
+  Monitor, not the log. If it goes yellow: add <code>--grad-checkpoint</code>, then drop
+  <code>--num-layers</code> to 4, then fall back to
+  <code>mlx-community/Qwen3-0.6B-4bit</code> at 0.335 GB.</p>
+</div>
+
+<h3>4. Test, then use</h3>
+
+<div class="formula mono-block">
+mlx_lm.lora --model mlx-community/Qwen3-1.7B-4bit \<br>
+&nbsp;&nbsp;--adapter-path ./adapters-a --data ./data --test<br><br>
+mlx_lm.generate --model mlx-community/Qwen3-1.7B-4bit \<br>
+&nbsp;&nbsp;--adapter-path ./adapters-a --prompt "list the files in src"
+</div>
+
+<p>Test loss is a weak signal for this job. The signal that matters is a held-out set of prompts
+where you count how often the model picks the right tool — the same personal eval set
+<a href="0014-reading-a-model-card.html">Lesson 14</a> argued for. Build it before you train, or you
+will have no way to know whether the fine-tune helped.</p>
+
+<hr>
+
+<h2>Soup: the free half of the lesson</h2>
+
+<p>You now have a training loop. Run it three times with different seeds and learning rates and you
+get three adapters, one of which validates best. The obvious move is to keep that one.</p>
+
+<p>The better move is to <strong>average them</strong>. Averaging the weights of models fine-tuned
+from the same base "often improves accuracy and robustness", and — the part that matters on an 8 GB
+machine — "unlike a conventional ensemble, we may average many models without incurring any
+additional inference or memory costs."
+<span class="cite"><a href="https://arxiv.org/abs/2203.05482">Wortsman et al., <em>Model soups</em> (arXiv 2203.05482)</a></span></p>
+
+<div class="keystone">
+  <span class="label">Why it works, and when it does not</span>
+  <p>Fine-tunes that start from one pretrained checkpoint "often appear to lie in a single low error
+  basin". Inside a basin, the straight line between two solutions stays low-loss, so the midpoint is
+  a valid model — often a better one, because averaging cancels the noise each run picked up from its
+  own seed and data order.</p>
+  <p>Cross the basin and it collapses. <strong>You cannot soup two independently pretrained
+  models</strong> — Qwen3 and Gemma 3 average to noise. Same base, or no soup.</p>
+</div>
+
+<h3>The recipe: greedy, not uniform</h3>
+
+<p>Averaging everything is the naive version, and the paper measured a better one. Sort your runs by
+held-out validation score, best first; then walk the list, adding each run to the soup only if the
+soup's score does not fall. "Before running this procedure we sort the models in decreasing order of
+validation set accuracy, and so the greedy soup can be no worse than the best individual model on
+the held-out validation set." Greedy souping also "avoid[s] adding in models which may lie in a
+different basin of the error landscape, which could happen if, for example, models are fine-tuned
+with high learning rates" — precisely the runs a hyperparameter sweep produces.
+<span class="cite">Both quotations from Wortsman et al. (arXiv 2203.05482), § Method.</span></p>
+
+<div class="formula">
+  <span class="cap">greedy soup</span><br>
+  sort runs by val score, best first<br>
+  soup ← {}<br>
+  for each run: if val(mean(soup ∪ run)) ≥ val(mean(soup)) then soup ← soup ∪ run
+</div>
+
+<p>Note what this costs you: <strong>nothing at inference</strong>. Unlike running three models and
+voting, the soup is one model of exactly the original size. On a machine with 4.2 GB, that
+distinction is the whole reason soup is available to you and ensembling is not.</p>
+
+<h3>The LoRA trap</h3>
+
+<p>Here is the part that catches people, and it is pure algebra. A LoRA adapter is stored as two
+matrices whose <em>product</em> is the weight change. If you average the two adapters' factors
+separately, you do not get the average of their effects:</p>
+
+<div class="formula">
+  <span class="cap">what you wanted</span><br>
+  ½(<span class="num">B₁A₁</span> <span class="op">+</span> <span class="num">B₂A₂</span>)<br><br>
+  <span class="cap">what averaging the factors gives you</span><br>
+  <sup>B₁+B₂</sup>⁄<sub>2</sub> · <sup>A₁+A₂</sup>⁄<sub>2</sub>
+  <span class="op">=</span>
+  ¼(<span class="num">B₁A₁</span> <span class="op">+</span> B₁A₂ <span class="op">+</span> B₂A₁ <span class="op">+</span> <span class="num">B₂A₂</span>)
+</div>
+
+<p>Half your signal, plus two cross terms that are pure noise — <code>A₂</code> was never trained
+against <code>B₁</code>. The fix is <strong>concatenation</strong>: stack the factors side by side,
+<code>[B₁ B₂] · [A₁ ; A₂]</code>, which multiplies out to exactly <code>B₁A₁ + B₂A₂</code> with no
+cross terms. This is PEFT's <code>combination_type="cat"</code>, and the documentation flags the
+consequence: "the rank of the resulting adapter is equal to the sum of all adapters ranks".
+<span class="cite"><a href="https://huggingface.co/docs/peft/en/package_reference/lora">PEFT <code>add_weighted_adapter</code> reference</a>. The alternatives are to fuse each adapter into its own full model first and average <em>those</em> (correct, and what mlx-lm's <code>mlx_lm.fuse</code> sets you up for), or <code>combination_type="svd"</code>, which computes the true sum and re-factors it back down to a chosen rank.</span></p>
+
+<div class="sidenote">
+  <strong>The 8 GB route.</strong> <code>mlx_lm.fuse</code> writes a full fused model per adapter,
+  and at 4-bit that is under a gigabyte each — so souping by fusing first is affordable here. Average
+  the fused tensors with a twenty-line <code>mlx.core</code> script, or hand the fused directories to
+  mergekit, which uses "lazy loading of tensors for low memory use" and an out-of-core approach that
+  runs on CPU or "as little as 8 GB of VRAM".
+  <span class="cite"><a href="https://github.com/arcee-ai/mergekit">mergekit README</a>. Invoke as <code>mergekit-yaml config.yml ./out --lazy-unpickle</code>.</span>
+</div>
+
+<h3>Beyond averaging</h3>
+
+<p>Soup is the first rung. The same machinery, one idea further on, treats <code>θ_finetuned −
+θ_base</code> as a <strong>task vector</strong> you can scale, add, and subtract. The merge methods
+you will see named in model cards are all variations on handling interference between those
+vectors:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Method</th><th>mergekit name</th><th>What it adds</th></tr></thead>
+  <tbody>
+    <tr><td>Model soup</td><td><code>linear</code></td><td>"Simple weighted average of model parameters". The baseline.</td></tr>
+    <tr><td>Task arithmetic</td><td><code>task_arithmetic</code></td><td>"Linearly combine 'task vectors' (differences from a base)" — so you can scale or negate a behaviour.</td></tr>
+    <tr><td>TIES</td><td><code>ties</code></td><td>"Task arithmetic + sparsification &amp; sign consensus". Trims tiny changes, then resolves parameters where two runs disagree on direction.</td></tr>
+    <tr><td>DARE</td><td><code>dare_ties</code></td><td>"Task arithmetic + random pruning &amp; rescaling". Drops most of the delta and rescales the rest, which reduces interference.</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Method names and descriptions quoted from the <a href="https://github.com/arcee-ai/mergekit">mergekit README</a>. Underlying papers: <a href="https://arxiv.org/abs/2212.04089">task arithmetic (2212.04089)</a>, <a href="https://arxiv.org/abs/2306.01708">TIES (2306.01708)</a>, <a href="https://arxiv.org/abs/2311.03099">DARE (2311.03099)</a>.</span>
+
+<p>For your case — several runs of the same job on the same base — plain <code>linear</code> with a
+greedy selection is the right tool, and the fancier methods are for merging <em>different</em> tasks.
+Reach for TIES when you have a tool-calling adapter and a summarization adapter and want one model
+that does both.</p>
+
+<div class="note">
+  <span class="tag">Back to the mission</span>
+  <p>A souped 1.7B adapter that reliably picks the right pi tool is a real routing option
+  (<a href="0012-multi-model-routing.html">Lesson 12</a>): the cheap local model handles tool
+  selection, the 64 GB machine's model handles the thinking. And it is one more reason to keep tool
+  schemas stable — <a href="0010-tool-design.html">Lesson 10</a> argued that from the KV-cache side;
+  fine-tuning adds a second argument, since every schema change invalidates your training data too.</p>
+</div>
+
+<hr>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <span class="qnum">Question 1</span>
+  <p class="q">LoRA's memory saving comes mainly from removing which parts of the budget?</p>
+  <div class="options">
+    <button class="opt">Base weights and activations</button>
+    <button class="opt" data-correct>Gradients and optimizer state</button>
+    <button class="opt">Activations and base weights</button>
+    <button class="opt">Optimizer state and KV cache</button>
+  </div>
+  <div class="explain">
+    <strong>Gradients and optimizer state.</strong> Both scale with <em>trainable</em> parameters,
+    and LoRA cuts those by roughly 2,000×. The base weights are still fully resident — LoRA freezes
+    them, it does not remove them — which is why quantizing the base is a separate and additive win.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 2</span>
+  <p class="q">Your fine-tune fits at 512 tokens but not at 4096. Which term grew?</p>
+  <div class="options">
+    <button class="opt" data-correct>Activations, the only length-scaled one</button>
+    <button class="opt">Optimizer state, scaled by example count</button>
+    <button class="opt">Base weights, scaled by context window</button>
+    <button class="opt">Gradients, scaled by tokens processed</button>
+  </div>
+  <div class="explain">
+    <strong>Activations.</strong> Three of the four terms depend only on parameter counts and do not
+    move when you change sequence length. Activations scale with batch × sequence × layers, which is
+    why they are also the term gradient checkpointing exists to attack.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 3</span>
+  <p class="q">Why can you not make a soup from Qwen3-1.7B and Gemma 3 4B?</p>
+  <div class="options">
+    <button class="opt">Their tokenizer vocabularies differ</button>
+    <button class="opt">Their quantization formats are different</button>
+    <button class="opt" data-correct>They sit in different loss basins</button>
+    <button class="opt">Their context window lengths differ</button>
+  </div>
+  <div class="explain">
+    <strong>Different loss basins.</strong> Soup works because fine-tunes of one checkpoint "lie in a
+    single low error basin", so the line between them stays low-loss. Independently pretrained models
+    share no such geometry and average to noise. The mismatched shapes and vocabularies would stop
+    you first, but the reason it would fail even if they matched is the basin.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 4</span>
+  <p class="q">Averaging two LoRA adapters' A and B matrices separately gives you what?</p>
+  <div class="options">
+    <button class="opt">The exact sum of both updates</button>
+    <button class="opt">The larger update, scaled down</button>
+    <button class="opt" data-correct>Half the signal plus cross terms</button>
+    <button class="opt">The same result as concatenating</button>
+  </div>
+  <div class="explain">
+    <strong>Half the signal plus two noise terms.</strong> (B₁+B₂)(A₁+A₂)/4 expands to
+    ¼(B₁A₁ + B₁A₂ + B₂A₁ + B₂A₂); the mixed products pair factors that never trained together.
+    Concatenating the factors gives B₁A₁ + B₂A₂ exactly, at double the rank.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 5</span>
+  <p class="q">Which want is <em>not</em> a good reason to fine-tune a local model?</p>
+  <div class="options">
+    <button class="opt">Choosing the right tool more often</button>
+    <button class="opt" data-correct>Emitting strictly valid JSON output</button>
+    <button class="opt">Stopping the loop at the right turn</button>
+    <button class="opt">Matching a bigger model on one job</button>
+  </div>
+  <div class="explain">
+    <strong>Valid JSON.</strong> A grammar makes invalid output unreachable during sampling; training
+    only makes it rarer, and rarer is not the same guarantee. Spend fine-tuning on behaviour a
+    grammar cannot express — which tool, which arguments, when to stop.
+  </div>
+</div>
+
+<div class="scoreboard" data-scoreboard></div>
+
+<div class="source">
+  <span class="tag">Read this next</span>
+  <span class="title">mlx-lm — Fine-Tuning with LoRA or QLoRA (LORA.md)</span>
+  <p>The official documentation for the tool you just ran, from the MLX team at Apple. Short, and
+  every section maps onto a term in this lesson: the Data section defines the four dataset shapes,
+  and Memory Issues is the canonical ordering of the levers. Read it start to finish before your
+  second training run — it is under 400 lines.
+  <a href="https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/LORA.md">github.com/ml-explore/mlx-lm/blob/main/mlx_lm/LORA.md</a></p>
+</div>
+
+<div class="ask">
+  <strong>Your teacher is one message away.</strong> Worth asking: "turn my pi transcripts into a
+  <code>tools</code> dataset", "write the twenty-line MLX script that averages two fused models",
+  "build the held-out eval set before I train anything", or "would a fine-tuned 1.7B actually beat
+  routing to the 64 GB machine here?"
+</div>
+
+<div class="addendum">
+  <span class="label">Addendum · the 48 GB M4</span>
+  <span class="when">Added 2026-09-05 — the lesson above stands as written; this is what a third machine changes.</span>
+  <p>Everything above was sized against 4.2 GB, where LoRA was not a preference but the only option.
+  On the <strong>48 GB M4's ~36 GB</strong> the four-term budget opens up considerably:</p>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Run</th><th class="num">Peak</th><th class="num">8 GB M1</th><th class="num">48 GB M4</th></tr></thead>
+    <tbody>
+      <tr class="hi"><td><strong>Full fine-tune, Qwen3-1.7B</strong></td><td class="num">19.60 GB</td><td class="num">no — 4.7× over</td><td class="num"><strong>fits</strong></td></tr>
+      <tr><td>QLoRA 4B, batch 4, seq 2048</td><td class="num">~14 GB</td><td class="num">no</td><td class="num">fits</td></tr>
+      <tr><td>QLoRA 1.7B, the run above</td><td class="num">1.94 GB</td><td class="num">fits</td><td class="num">trivial</td></tr>
+      <tr><td>Full fine-tune, Qwen3-4B</td><td class="num">~44 GB</td><td class="num">no</td><td class="num">no</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>Three consequences. <strong>Batch size stops being pinned at 1</strong>, so `--grad-accumulation-steps`
+  becomes a convenience rather than a necessity and runs finish in a fraction of the wall clock.
+  <strong>Full fine-tuning of a small model is now on the table</strong> — which matters because
+  Biderman et al. found LoRA underperforms full fine-tuning precisely on code and mathematics, the
+  domains you care about. And <strong>soup becomes practical in one sitting</strong>: three runs of a
+  1.7B QLoRA at batch 4 take an evening rather than a weekend, and greedy souping needs several runs
+  to have anything to be greedy about.</p>
+  <p>The calculator above now carries a <strong>48 GB M4 — 36 GB usable</strong> budget option;
+  select it and re-run the reveal question to see how differently the levers behave when memory is
+  not the binding constraint. Machine details in <a href="../reference/three-machines.html">Three Machines</a>.</p>
+</div>
+
+<nav class="footer-nav">
+  <strong>Workspace</strong>
+  <ul>
+    <li><a href="../index.html">Workspace index — all lessons</a></li>
+    <li><a href="0015-the-landscape.html">Lesson 15 · The Landscape</a></li>
+    <li><a href="../reference/finetuning-and-merging.html">Reference · Fine-tuning and merging cheat sheet</a></li>
+    <li><a href="../reference/napkin-math.html">Reference · Napkin math cheat sheet</a></li>
+    <li><a href="../GLOSSARY.md">Glossary</a> · <a href="../RESOURCES.md">Resources</a> · <a href="../MISSION.md">Mission</a></li>
+  </ul>
+</nav>
+
+</div>
+<script src="../assets/quiz.js"></script>
+<script src="../assets/trainbudget.js"></script>
+</body>
+</html>

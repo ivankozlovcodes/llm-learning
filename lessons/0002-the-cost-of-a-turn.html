@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 2 · The Cost of a Turn</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+<link rel="stylesheet" href="../assets/agentsim.css">
+</head>
+<body>
+<div class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 2 · Local LLM Hardware</p>
+  <h1>The Cost of a Turn</h1>
+  <p class="standfirst">Lesson 1 modelled one long generation. An agent loop is the opposite:
+  many short turns over a long, growing prefix. Different physics, different hardware answer.</p>
+  <div class="meta">
+    <span>~15 minutes</span>
+    <span>Prerequisite: <a href="0001-the-bandwidth-rule.html">Lesson 1</a></span>
+    <span><a href="../MISSION.md">Mission</a> · <a href="../GLOSSARY.md">Glossary</a> · <a href="../reference/napkin-math.html">Cheat sheet</a></span>
+  </div>
+</header>
+
+<p>You are building harnesses for CLI agents. So the number that matters is not "tokens per second"
+in the abstract — it is <strong>how long a turn takes</strong>, from you hitting return to the agent
+finishing its move. That decomposes into two operations with completely different cost models, and
+Lesson 1 only taught you one of them.</p>
+
+<div class="keystone">
+  <span class="label">The one idea</span>
+  <p>A turn is <strong>prefill</strong> (read the prompt) followed by <strong>decode</strong>
+  (write the reply). Decode is bandwidth-bound, as you know. <strong>Prefill is compute-bound</strong>
+  — a completely different bottleneck, on a completely different spec.</p>
+  <p>Which one dominates your agent loop is not a property of the hardware. It is a property of
+  <em>your harness</em>.</p>
+</div>
+
+<h2>The proof, from a natural experiment</h2>
+
+<p>The llama.cpp benchmark thread happens to contain a controlled experiment. The M1 Max and the
+M2 Max have <strong>identical memory bandwidth</strong> — 400 GB/s — but the M2 Max has 38 GPU
+cores to the M1 Max's 32, about 19% more compute. Same model, same quantization:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Chip</th><th class="num">Bandwidth</th><th class="num">GPU cores</th><th class="num">Prefill (pp512)</th><th class="num">Decode (tg128)</th></tr></thead>
+  <tbody>
+    <tr><td>M1 Max</td><td class="num">400 GB/s</td><td class="num">32</td><td class="num">530.1 tok/s</td><td class="num">61.2 tok/s</td></tr>
+    <tr><td>M2 Max</td><td class="num">400 GB/s</td><td class="num">38</td><td class="num">671.3 tok/s</td><td class="num">66.0 tok/s</td></tr>
+    <tr><td><strong>Change</strong></td><td class="num"><strong>0%</strong></td><td class="num"><strong>+19%</strong></td><td class="num"><strong>+26.6%</strong></td><td class="num"><strong>+7.8%</strong></td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">LLaMA 7B Q4_0. Source: <a href="https://github.com/ggml-org/llama.cpp/discussions/4167">llama.cpp Apple Silicon benchmark thread</a>.</span>
+
+<p>Add compute, hold bandwidth constant: <strong>prefill tracks the compute, decode barely moves.</strong>
+That is the whole argument in one table. The two phases are limited by different resources.</p>
+
+<h3>Why prefill escapes the bandwidth limit</h3>
+
+<p>In decode you process one token, so each weight is read from memory and used for a single
+multiply-add — a matrix–vector product. In prefill you process the entire prompt <em>at once</em>.
+Each weight is still read once, but now it is used against every token position in the prompt — a
+matrix–matrix product. Read the same bytes, do 512× the arithmetic.</p>
+
+<div class="formula">
+  arithmetic intensity  =  FLOPs performed  ÷  bytes read
+  <span class="cap">decode: ~2 per weight · prefill: ~2 × prompt length per weight</span>
+</div>
+
+<p>Raise arithmetic intensity high enough and the memory system stops being the constraint — the
+compute units become it. That crossover is exactly what the M1/M2 Max table shows.</p>
+<span class="cite">Treatment of arithmetic intensity: <a href="https://jax-ml.github.io/scaling-book/inference/">JAX scaling book, All About Transformer Inference</a>; <a href="https://kipp.ly/transformer-inference-arithmetic/">kipply, Transformer Inference Arithmetic</a>.</span>
+
+<h2>What a turn actually costs</h2>
+
+<div class="formula">
+  turn time  =  <span class="num">prompt tokens ÷ prefill rate</span>  +  <span class="num">output tokens ÷ decode rate</span>
+  <span class="cap">the first term is your time to first token</span>
+</div>
+
+<p>Now the two machines you have been weighing, on the same 70B model:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Setup</th><th class="num">Prefill</th><th class="num">Decode</th><th class="num">Ratio</th></tr></thead>
+  <tbody>
+    <tr><td>M1 Max · Llama 7B Q4_0 <em>(measured)</em></td><td class="num">530 tok/s</td><td class="num">61.2 tok/s</td><td class="num">9:1</td></tr>
+    <tr><td>M1 Max · Llama 70B Q4 <em>(scaled estimate)</em></td><td class="num">~53 tok/s</td><td class="num">~7.4 tok/s</td><td class="num">7:1</td></tr>
+    <tr><td>DGX Spark · Llama 8B FP8 <em>(measured)</em></td><td class="num">7,991 tok/s</td><td class="num">20.5 tok/s</td><td class="num">390:1</td></tr>
+    <tr><td>DGX Spark · Llama 70B FP8 <em>(measured)</em></td><td class="num">803 tok/s</td><td class="num">2.7 tok/s</td><td class="num">297:1</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Spark figures: <a href="https://www.lmsys.org/blog/2025-10-13-nvidia-dgx-spark/">LMSYS, DGX Spark In-Depth Review</a> (SGLang, batch 1). M1 Max 70B scaled inversely with parameter count from the measured 7B result — treat as an estimate, not a measurement.</span>
+
+<p>Look at the ratio column, not the absolute numbers. The Mac is a <strong>balanced</strong>
+machine: prefill is only ~7–9× decode. The Spark is a <strong>wildly lopsided</strong> one: it
+ingests text 300–400× faster than it writes it. These are different tools, and which is better
+depends entirely on the ratio of reading to writing in your workload.</p>
+
+<h2>The agent loop's specific problem</h2>
+
+<p>Here is what makes agent harnesses different from chat. Each turn appends to the conversation:
+your instruction, the model's reply, and — usually the biggest chunk — tool output. The context
+only grows. And on a naive harness, <strong>every turn re-prefills the entire conversation from
+scratch.</strong></p>
+
+<div class="reveal">
+  <span class="tag">Predict before you look</span>
+  <p class="prompt">A 25-turn agent session. Starts at 12k tokens of system prompt and repo
+  context, and each turn adds ~1,250 tokens. By the last turn the context is ~42k. On the M1 Max
+  running 70B at ~53 tok/s prefill — <strong>how long is the wait before the last turn produces its
+  first token?</strong></p>
+  <button class="show-answer">Reveal</button>
+  <div class="answer">
+    <p>42,000 ÷ 53 = <strong>13 minutes</strong>. Before a single token appears. And you pay a
+    version of that on <em>every</em> turn, growing each time.</p>
+    <p>Total prefill work across the session scales with the <em>square</em> of the turn count.
+    This is the failure mode that makes people conclude local models "can't do agents" — and it is
+    a harness bug, not a hardware limit.</p>
+  </div>
+</div>
+
+<h3>The fix: prefix cache reuse</h3>
+
+<p>The conversation prefix does not change between turns — you only append to the end. So the
+KV cache computed for those tokens is still valid. A harness that keeps it around prefills only
+the <strong>newly appended tokens</strong>, and the quadratic blow-up collapses to linear.</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Turn 25, M1 Max 70B</th><th class="num">Tokens prefilled</th><th class="num">Time to first token</th></tr></thead>
+  <tbody>
+    <tr><td>Naive — re-prefill everything</td><td class="num">42,000</td><td class="num">13 min</td></tr>
+    <tr><td>Prefix cache reused</td><td class="num">1,250</td><td class="num">24 s</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Same hardware, same model, ~33× difference. This is the single highest-leverage thing in a local
+agent harness, and it lives entirely on your side of the API.</p>
+
+<h2>Run the session yourself</h2>
+
+<p>Set a machine, set your context shape, then toggle the cache. Watch the bar chart change shape —
+that shape is the difference between a harness that works and one that doesn't.</p>
+
+<div class="agentsim" data-agentsim></div>
+
+<h2>Now the buy decision gets interesting</h2>
+
+<p>Take the same 25-turn session and run it on both machines, both with cache reuse on. Per turn:
+1,250 tokens in, 350 tokens out.</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Machine (70B)</th><th class="num">Prefill 1,250</th><th class="num">Decode 350</th><th class="num">Turn total</th></tr></thead>
+  <tbody>
+    <tr><td>M1 Max</td><td class="num">23.6 s</td><td class="num">47.3 s</td><td class="num"><strong>71 s</strong></td></tr>
+    <tr><td>DGX Spark</td><td class="num">1.6 s</td><td class="num">129.6 s</td><td class="num"><strong>131 s</strong></td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="keystone">
+  <span class="label">The result that matters for your mission</span>
+  <p><strong>Without cache reuse, the Spark wins an agent workload comfortably.</strong> Its 15×
+  prefill advantage is exactly what a re-prefill-everything harness needs.</p>
+  <p><strong>With cache reuse, the Mac wins again</strong> — because once prefill is small, decode
+  dominates the turn, and decode is bandwidth, and bandwidth is Lesson 1.</p>
+  <p>So the hardware answer is downstream of a software decision <em>you control</em>. Build the
+  cache-reusing harness and the cheap machine is the right buy. That is not a conclusion you could
+  have reached from either lesson alone.</p>
+</div>
+
+<div class="note">
+  <span class="tag">The caveat that will bite you</span>
+  <p>Cache reuse only works while the prefix is byte-identical. Trimming old turns to save context,
+  injecting a timestamp into the system prompt, reordering tool definitions — each invalidates the
+  cache from that point forward, and that turn costs the uncached price. Harness design decisions
+  that look free are not.</p>
+</div>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <span class="qnum">Question 1</span>
+  <p class="q">Two chips, identical memory bandwidth, one has 19% more GPU cores. Prefill rose 26%, decode rose 8%. What does this establish?</p>
+  <div class="options">
+    <button class="opt" data-correct>Prefill is compute-bound</button>
+    <button class="opt">Decode is compute-bound</button>
+    <button class="opt">Both are bandwidth-bound</button>
+    <button class="opt">Neither is bandwidth-bound</button>
+  </div>
+  <div class="explain">
+    <strong>Prefill is compute-bound.</strong> The only variable that changed was compute, and only
+    prefill responded to it. Decode stayed flat because its constraint — bandwidth — was held
+    constant. This is why the two phases must be reasoned about with separate models.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 2</span>
+  <p class="q">Your agent's context is 30k tokens and prefill runs at 50 tok/s. With no cache reuse, what is the time to first token?</p>
+  <div class="options">
+    <button class="opt" data-correct>10 minutes</button>
+    <button class="opt">10 seconds</button>
+    <button class="opt">60 seconds</button>
+    <button class="opt">30 minutes</button>
+  </div>
+  <div class="explain">
+    <strong>10 minutes.</strong> 30,000 ÷ 50 = 600 seconds. Every turn. This is what "local models
+    are too slow for agents" almost always turns out to mean — and it is fixable in software.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 3</span>
+  <p class="q">With prefix cache reuse working correctly, what sets a mid-session turn's prefill cost?</p>
+  <div class="options">
+    <button class="opt" data-correct>Newly appended tokens</button>
+    <button class="opt">The entire context</button>
+    <button class="opt">The output length</button>
+    <button class="opt">The model size</button>
+  </div>
+  <div class="explain">
+    <strong>Newly appended tokens.</strong> The cached prefix is skipped entirely, so cost tracks
+    what you added this turn — mostly tool output. Which means <em>controlling tool output size</em>
+    is a performance lever in your harness, equal in weight to any hardware choice.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 4</span>
+  <p class="q">A harness that re-prefills the whole conversation each turn: how does total session cost grow with turn count?</p>
+  <div class="options">
+    <button class="opt" data-correct>Quadratically</button>
+    <button class="opt">Linearly</button>
+    <button class="opt">Logarithmically</button>
+    <button class="opt">Constantly</button>
+  </div>
+  <div class="explain">
+    <strong>Quadratically.</strong> Turn <em>n</em> prefills roughly <em>n</em> × tokens-per-turn,
+    and summing over turns gives an n² term. With cache reuse each turn prefills a constant amount,
+    so the session becomes linear. Same hardware, different asymptotics.
+  </div>
+</div>
+
+<div class="scoreboard" data-scoreboard></div>
+
+<h2>What this still does not cover</h2>
+
+<ul>
+  <li><strong>The KV cache costs memory.</strong> Reuse is free in compute but not in RAM, and at
+  42k tokens it is a serious fraction of your budget. That memory competes with the weights — which
+  means it can force you off a model entirely.
+  <a href="0003-the-cache-has-a-price.html">Lesson 3</a> prices it, and the answer disqualifies the
+  70B model this lesson just used as its example.</li>
+  <li><strong>Batching.</strong> Since you are the sole user, this only matters for parallel
+  subagents — but on a bandwidth-bound machine it is close to free. The Spark went from 20.5 to
+  368 tok/s of decode throughput at batch 32 while prefill stayed flat. If your harness fans out,
+  that changes the maths again.</li>
+  <li><strong>Whether the model can do the job at all.</strong> Tool-calling reliability and
+  structured output are model-capability questions that no amount of bandwidth fixes. That is the
+  other half of your mission and the workspace has not touched it yet.</li>
+</ul>
+
+<div class="source">
+  <span class="tag">Read this next</span>
+  <span class="title">All About Transformer Inference — JAX scaling book (Google DeepMind)</span>
+  <p>The rigorous version of this lesson. Works through prefill versus decode, arithmetic intensity,
+  and the roofline model that determines which regime you are in. Denser than the zeux piece from
+  Lesson 1; read that one first if you have not.</p>
+  <p style="margin-top:0.6rem"><a href="https://jax-ml.github.io/scaling-book/inference/">jax-ml.github.io/scaling-book/inference/</a></p>
+</div>
+
+<div class="ask">
+  <strong>Your teacher is one message away.</strong> Particularly worth asking here: "how do I
+  actually turn on prefix caching in llama.cpp / vLLM?", "what invalidates the cache in practice?",
+  or "does the 70B estimate hold up — can we measure it?" The last one is a real experiment we
+  could run.
+</div>
+
+<nav class="footer-nav">
+  <strong>Workspace</strong>
+  <ul>
+    <li><a href="0001-the-bandwidth-rule.html">Lesson 1 · The Bandwidth Rule</a></li>
+    <li><a href="0003-the-cache-has-a-price.html">Lesson 3 · The Cache Has a Price</a></li>
+    <li><a href="0004-the-tops-trap.html">Lesson 4 · The TOPS Trap</a> — micro PCs, Jetson, and why TOPS misleads</li>
+    <li><a href="../reference/napkin-math.html">Reference · Napkin math cheat sheet</a></li>
+    <li><a href="../GLOSSARY.md">Glossary</a> · <a href="../RESOURCES.md">Resources</a> · <a href="../MISSION.md">Mission</a></li>
+  </ul>
+</nav>
+
+</div>
+<script src="../assets/quiz.js"></script>
+<script src="../assets/agentsim.js"></script>
+</body>
+</html>

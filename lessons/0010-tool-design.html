@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 10 · Tool Design for Local Models</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<div class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 10 · Local LLM Fluency</p>
+  <h1>Tool Design for Local Models</h1>
+  <p class="standfirst">Tool schemas written for a frontier model are a liability in front of a 4B.
+  The fix is not better prompting — it is designing so that fewer decisions reach the model at all.</p>
+  <div class="meta">
+    <span>~18 minutes</span>
+    <span>Prerequisites: <a href="0008-tool-calling.html">8</a>, <a href="0009-anatomy-of-a-turn.html">9</a></span>
+    <span><a href="../MISSION.md">Mission</a> · <a href="../GLOSSARY.md">Glossary</a></span>
+  </div>
+</header>
+
+<div class="keystone">
+  <span class="label">The one idea</span>
+  <p>Every tool you register is <strong>paid for twice</strong>: once in tokens, on every single
+  prefill for the rest of the session, and once in <strong>decision load</strong> — every additional
+  tool is another way for a weak model to choose wrong.</p>
+  <p>Frontier models absorb both costs invisibly. A local 4B does not.</p>
+</div>
+
+<h2>The token bill</h2>
+
+<p>Tool definitions live in the system prompt region, injected by the chat template. They are part of
+the cached prefix, so with cache reuse you pay their prefill once — but you pay their
+<strong>KV cache footprint forever</strong>.</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Tool set</th><th class="num">Tokens</th><th class="num">KV on Qwen3-4B</th><th class="num">Share of 1.7 GB headroom</th></tr></thead>
+  <tbody>
+    <tr><td>5 tools, terse descriptions</td><td class="num">~600</td><td class="num">0.09 GB</td><td class="num">5%</td></tr>
+    <tr><td>15 tools, thorough descriptions</td><td class="num">~4,000</td><td class="num">0.58 GB</td><td class="num">34%</td></tr>
+    <tr><td>30 tools with examples each</td><td class="num">~12,000</td><td class="num">1.73 GB</td><td class="num"><strong>100% — nothing left</strong></td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>At 144 KB per token, a generous tool catalogue can consume the entire context budget of the 8 GB
+machine before the user says anything. On a 64 GB machine the same catalogue is a rounding error.
+<strong>Tool count is a hardware-dependent design decision</strong>, which is not how anyone
+normally thinks about it.</p>
+
+<h2>The decision bill</h2>
+
+<p>From Lesson 6: quantization damages multi-step reasoning first. Tool selection <em>is</em>
+multi-step reasoning — read the situation, compare candidates, pick, extract arguments. Errors
+compound:</p>
+
+<div class="formula">
+  P(correct turn) = P(right tool) × P(right args) × P(right stopping)
+  <span class="cap">four steps at 95% each is 81% end to end</span>
+</div>
+
+<p>Adding a sixteenth tool does not cost 1/16 of the accuracy — it costs more, because the new tool
+is usually similar to an existing one, and similar options are exactly what a degraded reasoner
+confuses.</p>
+
+<h2>Seven rules</h2>
+
+<h3>1. Fewer tools, wider each</h3>
+<p>Prefer one <code>file_edit</code> with a mode parameter over <code>replace_line</code>,
+<code>insert_after</code>, <code>delete_range</code> and <code>append_file</code>. A constrained
+enum inside one schema is a decision the <em>grammar</em> can enforce; four separate tools is a
+decision only the model can make.</p>
+
+<h3>2. Make names semantically distant</h3>
+<p><code>search_files</code> and <code>find_in_files</code> will be confused. <code>grep</code> and
+<code>list_directory</code> will not. Distance in meaning is the cheapest accuracy you can buy — it
+costs nothing at runtime.</p>
+
+<h3>3. Descriptions state <em>when</em>, not <em>what</em></h3>
+<p>A weak model needs a selection cue more than an explanation. "Read a file from disk" describes
+the tool. "Use when you need the contents of a file you have not already read" tells the model when
+to pick it — and when not to.</p>
+
+<h3>4. Constrain every field you can</h3>
+<p>An enum makes wrong values unrepresentable via the grammar (Lesson 8). A free-form string makes
+them merely unlikely. Every field you can turn into an enum, a bounded integer, or a pattern is a
+failure mode deleted rather than discouraged.</p>
+
+<h3>5. Return the minimum that answers the question</h3>
+<p>From Lesson 9: tool results are next turn's prefill and permanent cache occupancy. Return the
+matching lines, not the file. Truncate with an explicit marker so the model knows more exists and
+can ask for it — a second cheap call beats one catastrophic one.</p>
+
+<h3>6. Validate in <code>beforeToolCall</code>, not in the prompt</h3>
+<p>"Always check the path exists first" in a system prompt is advisory, costs tokens on every turn,
+and degrades with quantization. The same rule in <code>beforeToolCall</code> is free, deterministic,
+and blocks the call with <code>{ block: true }</code> before it costs anything.</p>
+
+<h3>7. Fail loudly, in the runtime's idiom</h3>
+<p>pi's convention is explicit: <em>throw</em> when a tool fails; do not return the error as content.
+The runtime turns the throw into a failed tool result the model can see and react to. An error
+returned as ordinary content looks like success to the model, which then builds on it.</p>
+
+<h2>A worked comparison</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th></th><th>Written for a frontier model</th><th>Written for a local 4B</th></tr></thead>
+  <tbody>
+    <tr><td>Tools</td><td>18 fine-grained</td><td>6 broad</td></tr>
+    <tr><td>Names</td><td><code>edit_file</code>, <code>modify_file</code>, <code>patch_file</code></td><td><code>edit</code>, <code>grep</code>, <code>run</code></td></tr>
+    <tr><td>Args</td><td>Free-form strings</td><td>Enums and bounded integers</td></tr>
+    <tr><td>Descriptions</td><td>Paragraph each, with examples</td><td>One line: when to use it</td></tr>
+    <tr><td>Validation</td><td>Prompt instructions</td><td><code>beforeToolCall</code> guards</td></tr>
+    <tr><td>Results</td><td>Whole files</td><td>Matching ranges, truncated</td></tr>
+    <tr><td class="num">Prefix tokens</td><td class="num">~5,000</td><td class="num">~700</td></tr>
+    <tr><td class="num">KV on 8 GB machine</td><td class="num">0.72 GB (42% of headroom)</td><td class="num">0.10 GB (6%)</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The second column is not a worse harness. It is the same harness designed against a real
+constraint — and it will also be faster and cheaper on the 64 GB machine, because nothing about
+these rules is specific to being memory-starved.</p>
+
+<div class="note">
+  <span class="tag">The counter-intuitive part</span>
+  <p>The instinct when a small model misuses a tool is to <em>explain more</em> — longer
+  descriptions, more examples, firmer instructions. That makes it worse: it enlarges the permanent
+  prefix, consumes cache headroom, and adds context the model must reason over before it can act.
+  The fix is almost always to remove a decision, not to explain it better.</p>
+</div>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <span class="qnum">Question 1</span>
+  <p class="q">Registering 30 richly-described tools on the 8 GB machine costs what, primarily?</p>
+  <div class="options">
+    <button class="opt" data-correct>The entire cache headroom</button>
+    <button class="opt">One slow initial prefill</button>
+    <button class="opt">Reduced decode throughput</button>
+    <button class="opt">Nothing, they're cached</button>
+  </div>
+  <div class="explain">
+    <strong>The entire cache headroom.</strong> ~12,000 tokens at 144 KB each is ~1.73 GB — the
+    whole budget left after weights. Prefix caching makes them free in time and permanently
+    expensive in memory, and memory is the binding constraint on that machine.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 2</span>
+  <p class="q">A local model keeps picking the wrong one of four similar edit tools. Best fix?</p>
+  <div class="options">
+    <button class="opt" data-correct>Merge into one enum</button>
+    <button class="opt">Expand each description</button>
+    <button class="opt">Add usage examples</button>
+    <button class="opt">Raise the temperature</button>
+  </div>
+  <div class="explain">
+    <strong>Merge them into one tool with a mode enum.</strong> That converts a model decision into
+    a grammar-enforceable one — the wrong value becomes unrepresentable. Longer descriptions and
+    examples enlarge the permanent prefix and add reasoning load, making the problem worse.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 3</span>
+  <p class="q">Which description helps a weak model most?</p>
+  <div class="options">
+    <button class="opt" data-correct>When to use it</button>
+    <button class="opt">What it does</button>
+    <button class="opt">How it works</button>
+    <button class="opt">What it returns</button>
+  </div>
+  <div class="explain">
+    <strong>When to use it.</strong> The model's hard problem is selection among candidates, not
+    comprehension of any one. A selection cue — "use when you need X and do not already have it" —
+    targets the step that actually fails. Mechanism and return shape belong in the schema.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 4</span>
+  <p class="q">In pi, a tool's handler hits an unreadable file. What should it do?</p>
+  <div class="options">
+    <button class="opt" data-correct>Throw an error</button>
+    <button class="opt">Return an error string</button>
+    <button class="opt">Return empty content</button>
+    <button class="opt">Retry silently three times</button>
+  </div>
+  <div class="explain">
+    <strong>Throw.</strong> pi's documented convention — the runtime converts it into a failed tool
+    result the model can see and react to. An error returned as ordinary content is indistinguishable
+    from success, and the model will build on it. Empty content is worse still: it reads as "the file
+    is empty."
+  </div>
+</div>
+
+<div class="scoreboard" data-scoreboard></div>
+
+<div class="ask">
+  <strong>Your teacher is one message away.</strong> Worth asking: "review my tool schema for a 4B",
+  "how do I express an enum in TypeBox for pi?", or "what does a good truncation marker look like?"
+</div>
+
+<nav class="footer-nav">
+  <strong>Workspace</strong>
+  <ul>
+    <li><a href="0009-anatomy-of-a-turn.html">Lesson 9 · Anatomy of a Turn</a></li>
+    <li><a href="0011-compaction-policy.html">Lesson 11 · Designing a Compaction Policy</a></li>
+    <li><a href="../GLOSSARY.md">Glossary</a> · <a href="../RESOURCES.md">Resources</a> · <a href="../MISSION.md">Mission</a></li>
+  </ul>
+</nav>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

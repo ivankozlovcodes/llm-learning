@@ -1,0 +1,44 @@
+/* ============================================================
+   Roofline chart component. Shows where a machine's compute
+   ceiling meets its bandwidth ceiling, and plots where decode
+   and prefill actually land. Shared across lessons.
+   ============================================================ */
+
+.roofline { border: 1px solid var(--rule); border-radius: 6px; margin: 2.2rem 0;
+            background: var(--paper-alt); overflow: hidden; }
+.roofline header { padding: 1rem 1.4rem 0.85rem; border-bottom: 1px solid var(--rule); }
+.roofline header .tag { font-family: var(--sans); font-size: 0.66rem; font-weight: 700;
+  letter-spacing: 0.13em; text-transform: uppercase; color: var(--accent); display: block; margin-bottom: 0.3rem; }
+.roofline header .sub { font-family: var(--sans); font-size: 0.84rem; color: var(--ink-soft); margin: 0; }
+
+.roofline .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem 1.3rem; padding: 1.2rem 1.4rem 0.6rem; }
+@media (max-width: 520px) { .roofline .controls { grid-template-columns: 1fr; } }
+.roofline .field { display: flex; flex-direction: column; gap: 0.35rem; }
+.roofline label { font-family: var(--sans); font-size: 0.7rem; font-weight: 600;
+  letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-faint); }
+.roofline select { font-family: var(--mono); font-size: 0.87rem; padding: 0.5rem 0.6rem;
+  border: 1px solid var(--rule); border-radius: 4px; background: var(--paper); color: var(--ink); width: 100%; }
+
+.roofline .plot { padding: 0.8rem 1.4rem 0.4rem; background: var(--paper); }
+.roofline svg { width: 100%; height: auto; display: block; }
+.roofline .grid-line { stroke: var(--rule); stroke-width: 1; }
+.roofline .axis-line { stroke: var(--ink-faint); stroke-width: 1.2; }
+.roofline .roof { stroke: var(--accent); stroke-width: 2.2; fill: none; }
+.roofline .ridge { stroke: var(--ink-faint); stroke-width: 1; stroke-dasharray: 3 3; }
+.roofline .tick { font-family: var(--mono); font-size: 9px; fill: var(--ink-faint); }
+.roofline .axlabel { font-family: var(--sans); font-size: 10px; font-weight: 600; fill: var(--ink-soft);
+  letter-spacing: 0.06em; text-transform: uppercase; }
+.roofline .pt { stroke: var(--paper); stroke-width: 2; }
+.roofline .pt.decode { fill: var(--bad); }
+.roofline .pt.prefill { fill: var(--good); }
+.roofline .ptlabel { font-family: var(--sans); font-size: 10px; font-weight: 600; }
+.roofline .ptlabel.decode { fill: var(--bad); }
+.roofline .ptlabel.prefill { fill: var(--good); }
+.roofline .region { font-family: var(--sans); font-size: 9.5px; fill: var(--ink-faint); font-style: italic; }
+
+.roofline .readout { border-top: 1px solid var(--rule); padding: 1.1rem 1.4rem;
+  font-family: var(--sans); font-size: 0.88rem; line-height: 1.55; color: var(--ink-soft); background: var(--paper); }
+.roofline .readout strong { color: var(--ink); }
+.roofline .readout .big { font-family: var(--mono); color: var(--accent); font-weight: 700; }
+
+@media print { .roofline .controls { display: none; } }

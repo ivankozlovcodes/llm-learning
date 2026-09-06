@@ -1,0 +1,56 @@
+/* ============================================================
+   Quantization explorer. Shows the measured quality/size/speed
+   trade-off across the GGUF quant ladder, and the divergence
+   between reasoning and recall benchmarks.
+   Depends on custom properties from lesson.css.
+   ============================================================ */
+
+.qexp { border: 1px solid var(--rule); border-radius: 6px; margin: 2.2rem 0;
+        background: var(--paper-alt); overflow: hidden; }
+.qexp header { padding: 1rem 1.4rem 0.85rem; border-bottom: 1px solid var(--rule); }
+.qexp header .tag { font-family: var(--sans); font-size: 0.66rem; font-weight: 700;
+  letter-spacing: 0.13em; text-transform: uppercase; color: var(--accent); display: block; margin-bottom: 0.3rem; }
+.qexp header .sub { font-family: var(--sans); font-size: 0.84rem; color: var(--ink-soft); margin: 0; }
+
+.qexp .ladder { display: flex; gap: 3px; padding: 1.1rem 1.4rem 0.4rem; }
+.qexp .rung { flex: 1; border: 1px solid var(--rule); border-radius: 4px; background: var(--paper);
+  padding: 0.55rem 0.3rem; cursor: pointer; text-align: center; transition: border-color .12s, background .12s; }
+.qexp .rung:hover { border-color: var(--accent); }
+.qexp .rung.on { border-color: var(--accent); background: var(--accent-soft); }
+.qexp .rung .nm { font-family: var(--mono); font-size: 0.72rem; font-weight: 700; color: var(--ink); display: block; }
+.qexp .rung .bw { font-family: var(--sans); font-size: 0.62rem; color: var(--ink-faint); display: block; margin-top: 0.15rem; }
+@media (max-width: 560px) { .qexp .ladder { flex-wrap: wrap; } .qexp .rung { flex: 1 1 30%; } }
+
+.qexp .plot { padding: 0.6rem 1.4rem 0.2rem; background: var(--paper); }
+.qexp svg { width: 100%; height: auto; display: block; }
+.qexp .gl { stroke: var(--rule); stroke-width: 1; }
+.qexp .ax { stroke: var(--ink-faint); stroke-width: 1.2; }
+.qexp .tk { font-family: var(--mono); font-size: 9px; fill: var(--ink-faint); }
+.qexp .lbl { font-family: var(--sans); font-size: 9.5px; font-weight: 600; letter-spacing: .05em; }
+.qexp .ser-reason { stroke: var(--bad); stroke-width: 2.2; fill: none; }
+.qexp .ser-avg { stroke: var(--good); stroke-width: 2.2; fill: none; stroke-dasharray: 5 3; }
+.qexp .dot-reason { fill: var(--bad); }
+.qexp .dot-avg { fill: var(--good); }
+.qexp .marker { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 3 3; }
+
+.qexp .legend { font-family: var(--sans); font-size: 0.74rem; color: var(--ink-faint);
+  display: flex; gap: 1.2rem; padding: 0 1.4rem 0.8rem; background: var(--paper); flex-wrap: wrap; }
+.qexp .legend i { display: inline-block; width: 0.85rem; height: 0; border-top-width: 2.5px;
+  border-top-style: solid; margin-right: 0.35rem; vertical-align: 3px; }
+.qexp .legend .r i { border-color: var(--bad); }
+.qexp .legend .a i { border-color: var(--good); border-top-style: dashed; }
+
+.qexp .readout { border-top: 1px solid var(--rule); padding: 1.2rem 1.4rem; background: var(--paper); }
+.qexp .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.9rem; margin-bottom: 1rem; }
+@media (max-width: 560px) { .qexp .stats { grid-template-columns: repeat(2, 1fr); } }
+.qexp .stat .k { font-family: var(--sans); font-size: 0.62rem; font-weight: 600; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--ink-faint); display: block; margin-bottom: 0.2rem; }
+.qexp .stat .v { font-family: var(--mono); font-size: 1.25rem; font-weight: 700; color: var(--ink);
+  font-variant-numeric: tabular-nums; }
+.qexp .verdict { font-family: var(--sans); font-size: 0.88rem; line-height: 1.5;
+  padding: 0.7rem 0.95rem; border-radius: 4px; }
+.qexp .verdict.ok { background: var(--good-soft); color: var(--good); }
+.qexp .verdict.warn { background: var(--accent-soft); color: var(--accent); }
+.qexp .verdict.bad { background: var(--bad-soft); color: var(--bad); }
+.qexp footer { font-family: var(--sans); font-size: 0.74rem; color: var(--ink-faint);
+  padding: 0.8rem 1.4rem; border-top: 1px solid var(--rule); line-height: 1.5; }

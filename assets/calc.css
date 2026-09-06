@@ -1,0 +1,136 @@
+/* ============================================================
+   Napkin-math calculator widget. Shared across lessons.
+   Depends on custom properties from lesson.css.
+   ============================================================ */
+
+.calc {
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  margin: 2.2rem 0;
+  background: var(--paper-alt);
+  overflow: hidden;
+}
+
+.calc header {
+  padding: 1rem 1.4rem 0.85rem;
+  border-bottom: 1px solid var(--rule);
+}
+.calc header .tag {
+  font-family: var(--sans);
+  font-size: 0.66rem; font-weight: 700; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--accent);
+  display: block; margin-bottom: 0.3rem;
+}
+.calc header .sub {
+  font-family: var(--sans);
+  font-size: 0.84rem;
+  color: var(--ink-soft);
+  margin: 0;
+}
+
+.calc .controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem 1.3rem;
+  padding: 1.3rem 1.4rem;
+}
+@media (max-width: 560px) { .calc .controls { grid-template-columns: 1fr; } }
+
+.calc .field { display: flex; flex-direction: column; gap: 0.35rem; }
+.calc .field.wide { grid-column: 1 / -1; }
+
+.calc label {
+  font-family: var(--sans);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.calc select, .calc input[type="number"] {
+  font-family: var(--mono);
+  font-size: 0.87rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--paper);
+  color: var(--ink);
+  width: 100%;
+}
+.calc textarea {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  line-height: 1.55;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--paper);
+  color: var(--ink);
+  width: 100%;
+  resize: vertical;
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
+}
+.calc select:focus, .calc input:focus, .calc textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+.calc input[type="range"] { width: 100%; accent-color: var(--accent); }
+.calc .range-row { display: flex; align-items: center; gap: 0.8rem; }
+.calc .range-val { font-family: var(--mono); font-size: 0.82rem; color: var(--ink-soft); min-width: 3.2rem; text-align: right; }
+
+.calc .readout {
+  border-top: 1px solid var(--rule);
+  padding: 1.3rem 1.4rem;
+  background: var(--paper);
+}
+
+.calc .chain {
+  font-family: var(--mono);
+  font-size: 0.84rem;
+  line-height: 2;
+  color: var(--ink-soft);
+  margin-bottom: 1.2rem;
+}
+.calc .chain .v { color: var(--ink); font-weight: 600; }
+.calc .chain .op { color: var(--ink-faint); }
+
+.calc .headline {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  padding-top: 1rem;
+  border-top: 1px solid var(--rule);
+}
+.calc .headline .big {
+  font-family: var(--mono);
+  font-size: 2.1rem;
+  font-weight: 700;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.calc .headline .unit { font-family: var(--sans); font-size: 0.86rem; color: var(--ink-soft); }
+
+.calc .fit {
+  font-family: var(--sans);
+  font-size: 0.85rem;
+  margin-top: 1rem;
+  padding: 0.65rem 0.9rem;
+  border-radius: 4px;
+  line-height: 1.45;
+}
+.calc .fit.ok   { background: var(--good-soft); color: var(--good); }
+.calc .fit.tight{ background: var(--accent-soft); color: var(--accent); }
+.calc .fit.no   { background: var(--bad-soft); color: var(--bad); }
+
+.calc footer {
+  font-family: var(--sans);
+  font-size: 0.76rem;
+  color: var(--ink-faint);
+  padding: 0.85rem 1.4rem;
+  border-top: 1px solid var(--rule);
+  line-height: 1.5;
+}
+
+@media print { .calc .controls, .calc footer { display: none; } }

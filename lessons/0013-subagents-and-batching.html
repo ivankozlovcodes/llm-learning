@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 13 · Sub-agents and Batching</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+<link rel="stylesheet" href="../assets/roofline.css">
+</head>
+<body>
+<div class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 13 · Local LLM Fluency</p>
+  <h1>Sub-agents and Batching</h1>
+  <p class="standfirst">Two ways to beat the bandwidth rule. Both work by the same trick — reading
+  the weights once and getting more than one token out of it.</p>
+  <div class="meta">
+    <span>~20 minutes</span>
+    <span>Prerequisites: <a href="0001-the-bandwidth-rule.html">1</a>, <a href="0004-the-tops-trap.html">4</a></span>
+    <span><a href="../MISSION.md">Mission</a> · <a href="../GLOSSARY.md">Glossary</a></span>
+  </div>
+</header>
+
+<p>Lesson 1 said decode is bandwidth-bound and you cannot beat the ceiling. That was true for one
+sequence, one token at a time. Relax either constraint and the ceiling moves — a lot.</p>
+
+<div class="keystone">
+  <span class="label">The one idea</span>
+  <p>The bandwidth rule says <em>one weight read yields one token</em>. Both techniques here break
+  that ratio: <strong>batching</strong> gets one token for each of N sequences per read;
+  <strong>speculative decoding</strong> gets several tokens for one sequence per read.</p>
+  <p>In roofline terms (Lesson 4), both move you rightward toward the ridge, into territory where
+  the compute you already paid for finally gets used.</p>
+</div>
+
+<h2>Batching</h2>
+
+<p>Process N sequences in one forward pass and the weights are read <strong>once for all of
+them</strong>. Matrix–vector becomes matrix–matrix, exactly as in prefill. The measured effect on a
+DGX Spark:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Llama 3.1 8B FP8</th><th class="num">Prefill</th><th class="num">Decode</th></tr></thead>
+  <tbody>
+    <tr><td>Batch 1</td><td class="num">7,991 t/s</td><td class="num">20.5 t/s</td></tr>
+    <tr><td>Batch 32</td><td class="num">7,949 t/s</td><td class="num"><strong>368 t/s</strong></td></tr>
+    <tr><td>Change</td><td class="num">−0.5%</td><td class="num"><strong>18×</strong></td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Source: <a href="https://www.lmsys.org/blog/2025-10-13-nvidia-dgx-spark/">LMSYS DGX Spark review</a>, SGLang.</span>
+
+<p>Read that carefully. <strong>Prefill did not move</strong> — it was already compute-bound, so
+there was no idle capacity to reclaim. Decode went up eighteenfold, because it had been wasting
+almost all of it. The more bandwidth-starved a machine is, the more batching gives back.</p>
+
+<div class="note">
+  <span class="tag">What batching does <em>not</em> do</span>
+  <p>Per-sequence latency stays roughly the same, or gets slightly worse. Batch 32 delivers 368
+  tok/s <em>in aggregate</em> — about 11.5 tok/s each, versus 20.5 alone. If you are waiting on one
+  answer, batching does not help you. It helps when you have several answers to wait on at once,
+  which for a sole user means exactly one thing: <strong>parallel sub-agents</strong>.</p>
+</div>
+
+<h3>Why this matters for your harness</h3>
+
+<p>From Lesson 9, pi's <code>executionMode</code> defaults to <code>"parallel"</code> — preflight
+sequentially, execute concurrently. If your tools are sub-agents, concurrency at the tool layer
+becomes batching at the inference layer, and four sub-agents cost far less than four times one.</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Sub-agents in flight</th><th class="num">Per-agent decode</th><th class="num">Wall clock vs sequential</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td class="num">baseline</td><td class="num">1.0×</td></tr>
+    <tr><td>4</td><td class="num">~70% of baseline</td><td class="num">~0.36×</td></tr>
+    <tr><td>8</td><td class="num">~50% of baseline</td><td class="num">~0.25×</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Illustrative, extrapolated from the batch-1 to batch-32 scaling above; exact numbers depend on the runtime and how much KV cache the concurrent sequences need.</span>
+
+<p>The limit is memory, not compute. Each concurrent sequence needs its own KV cache — so on the
+8 GB machine with 1.7 GB of headroom, four concurrent 8k-token sub-agents want 4.8 GB and you cannot
+have them. <strong>Batching is a big-machine luxury.</strong> On the 64 GB machine it is close to
+free capacity you are currently not using.</p>
+
+<h2>Speculative decoding</h2>
+
+<p>A small <em>draft</em> model proposes the next several tokens. The large model then verifies all
+of them in a <strong>single forward pass</strong> — checking N positions at once, which is
+compute-bound work, not bandwidth-bound. Accepted tokens are kept; the first rejection resets to
+that point.</p>
+
+<div class="formula">
+  1 weight read  →  <span class="num">k accepted tokens</span>
+  <span class="cap">k depends on how often the draft model guesses right</span>
+</div>
+
+<p>The output is <em>identical</em> to what the large model would have produced alone — verification
+enforces that. This is not an approximation; it is the same distribution, arrived at faster.</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Condition</th><th>Effect</th></tr></thead>
+  <tbody>
+    <tr><td>Draft model agrees often (boilerplate, code, structured output)</td><td>Large speedup — up to ~2× measured</td></tr>
+    <tr><td>Draft model disagrees often (novel reasoning)</td><td>Little gain; wasted verification work</td></tr>
+    <tr><td>Memory-bandwidth-starved machine</td><td>Bigger gain — more idle compute to reclaim</td></tr>
+    <tr><td>Draft model too large</td><td>Net loss — drafting costs more than it saves</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">The ~2× figure is EAGLE3 on Llama 3.1 8B, measured by <a href="https://www.lmsys.org/blog/2025-10-13-nvidia-dgx-spark/">LMSYS on DGX Spark</a>.</span>
+
+<h3>MTP: the draft model shipped in the box</h3>
+
+<p>You have already seen this without knowing it. The <code>unsloth/Qwen3.8-27B-GGUF</code> repository
+contains an <code>MTP/</code> directory — <strong>multi-token prediction</strong> heads, trained
+alongside the model to predict several tokens ahead. That is a purpose-built draft model, distributed
+with the weights.</p>
+
+<p>When a release ships MTP files, speculative decoding is not an exotic optimisation you have to
+assemble — it is a supported configuration, and skipping it leaves a large fraction of the model's
+speed unclaimed.</p>
+
+<h2>Both on one chart</h2>
+
+<p>Set the machine to something bandwidth-starved and compare decode against prefill. Batching and
+speculative decoding both move a workload from the left of the ridge toward the right:</p>
+
+<div class="roofline" data-roofline data-machine="orinsuper"></div>
+
+<h2>What to actually do</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Machine</th><th>Batching</th><th>Speculative decoding</th></tr></thead>
+  <tbody>
+    <tr><td>8 GB M1</td><td>No — no memory for concurrent caches</td><td>Marginal — a draft model competes for the same 4.2 GB</td></tr>
+    <tr><td>64 GB MacBook Pro</td><td><strong>Yes</strong> — parallel sub-agents are nearly free</td><td><strong>Yes</strong>, when the model ships a draft or MTP head</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>And the design consequence for pi: on the big machine, a harness that fans work out to several
+concurrent sub-agents is not merely tidier than doing it sequentially — it is <em>faster in wall
+clock</em> by a factor the bandwidth rule alone would tell you is impossible.</p>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <span class="qnum">Question 1</span>
+  <p class="q">Batch size 1 to 32 raised decode 18× but left prefill unchanged. Why?</p>
+  <div class="options">
+    <button class="opt" data-correct>Prefill was already compute-bound</button>
+    <button class="opt">Prefill cannot be batched</button>
+    <button class="opt">Prefill is memory-bandwidth bound</button>
+    <button class="opt">The measurement excluded prefill</button>
+  </div>
+  <div class="explain">
+    <strong>Prefill was already compute-bound.</strong> It had no idle compute to reclaim — it was
+    saturating the chip already. Decode was using a fraction of a percent of it, so batching had
+    enormous slack to recover. Batching helps exactly in proportion to how memory-bound you were.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 2</span>
+  <p class="q">You are waiting on a single answer. Does batching help?</p>
+  <div class="options">
+    <button class="opt" data-correct>No, aggregate only</button>
+    <button class="opt">Yes, proportionally faster</button>
+    <button class="opt">Yes, but only prefill</button>
+    <button class="opt">Only above batch eight</button>
+  </div>
+  <div class="explain">
+    <strong>No — batching raises aggregate throughput, not per-sequence latency.</strong> Batch 32
+    gave 368 tok/s across 32 sequences, about 11.5 each, versus 20.5 running alone. For a sole user
+    it pays off only with parallel sub-agents.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 3</span>
+  <p class="q">Does speculative decoding change the model's output?</p>
+  <div class="options">
+    <button class="opt" data-correct>No, verification guarantees it</button>
+    <button class="opt">Yes, slightly more random</button>
+    <button class="opt">Yes, quality drops somewhat</button>
+    <button class="opt">Only at high temperature</button>
+  </div>
+  <div class="explain">
+    <strong>No.</strong> The large model verifies every drafted token and rejects any it would not
+    have produced, so the result is drawn from the same distribution as unassisted decoding. The
+    draft model affects only <em>speed</em>, through how often its guesses are accepted.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 4</span>
+  <p class="q">What limits how many sub-agents you can run concurrently?</p>
+  <div class="options">
+    <button class="opt" data-correct>KV cache memory</button>
+    <button class="opt">Available compute</button>
+    <button class="opt">Memory bandwidth</button>
+    <button class="opt">The tool execution mode</button>
+  </div>
+  <div class="explain">
+    <strong>KV cache memory.</strong> Each concurrent sequence needs its own cache, so four 8k-token
+    sub-agents want ~4.8 GB on Qwen3-4B — more than the 8 GB machine's entire headroom. Compute and
+    bandwidth have slack; memory does not. Batching is a big-machine technique.
+  </div>
+</div>
+
+<div class="scoreboard" data-scoreboard></div>
+
+<div class="ask">
+  <strong>Your teacher is one message away.</strong> Worth asking: "how do I enable speculative
+  decoding in llama.cpp?", "what makes a good draft model?", or "how many sub-agents fit in 48 GB?"
+</div>
+
+<nav class="footer-nav">
+  <strong>Workspace</strong>
+  <ul>
+    <li><a href="0012-multi-model-routing.html">Lesson 12 · Multi-Model Routing</a></li>
+    <li><a href="0014-reading-a-model-card.html">Lesson 14 · Reading a Model Card</a></li>
+    <li><a href="../GLOSSARY.md">Glossary</a> · <a href="../RESOURCES.md">Resources</a> · <a href="../MISSION.md">Mission</a></li>
+  </ul>
+</nav>
+
+</div>
+<script src="../assets/quiz.js"></script>
+<script src="../assets/roofline.js"></script>
+</body>
+</html>

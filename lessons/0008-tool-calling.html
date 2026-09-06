@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 8 · Tool Calling</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<div class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 8 · Local LLM Fluency</p>
+  <h1>Tool Calling</h1>
+  <p class="standfirst">The capability no amount of bandwidth buys. And the one place where local
+  inference has a genuine advantage over every hosted API.</p>
+  <div class="meta">
+    <span>~20 minutes</span>
+    <span>Prerequisite: <a href="0007-templates-and-sampling.html">Lesson 7</a></span>
+    <span><a href="../MISSION.md">Mission</a> · <a href="../GLOSSARY.md">Glossary</a></span>
+  </div>
+</header>
+
+<p>A harness is a loop: the model asks for a tool, you run it, you feed the result back. Every turn
+depends on the model emitting something your parser can read. Lesson 7 got you a call that is
+<em>probably</em> well-formed. This lesson is about making malformed output structurally
+impossible.</p>
+
+<div class="keystone">
+  <span class="label">The one idea</span>
+  <p>You do not have to <em>ask</em> a local model for valid JSON. You can <strong>make invalid
+  JSON unrepresentable</strong> — by filtering the token distribution at every step so only tokens
+  that keep the output grammatically valid survive.</p>
+  <p>Hosted APIs mostly ask nicely. Running locally, you own the sampler, so you can enforce.</p>
+</div>
+
+<h2>Two ways a model calls a tool</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th></th><th>Prompted</th><th>Native</th></tr></thead>
+  <tbody>
+    <tr><td>How</td><td>Tools described in the system prompt; model writes JSON as ordinary text</td><td>Tools injected by the chat template; model emits trained special tokens</td></tr>
+    <tr><td>Works with</td><td>Any model</td><td>Only tool-trained models with a tool-aware template</td></tr>
+    <tr><td>Reliability</td><td>Poor to moderate</td><td>Good</td></tr>
+    <tr><td>Fails by</td><td>Prose around the JSON, markdown fences, invented fields</td><td>Wrong arguments rather than wrong shape</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Native is the one you want, and it is a property of the <em>template</em> as much as the weights.
+A tool-trained model served without a tool-aware template silently degrades to the prompted path —
+which is exactly the fourth failure mode from Lesson 7, now with visible consequences.</p>
+
+<h2>Constrained decoding: the mechanism</h2>
+
+<p>At each step the model proposes a distribution over the vocabulary. A grammar knows which tokens
+could legally come next given what has been emitted so far. Intersect the two, and illegal tokens
+get probability zero before sampling ever happens.</p>
+
+<div class="formula">
+  model distribution  ∩  <span class="num">grammar's legal next tokens</span>  →  sample
+  <span class="cap">applied at every step · invalid output cannot be produced</span>
+</div>
+
+<p>llama.cpp implements this as <strong>GBNF</strong> — a BNF-style grammar notation — and converts
+JSON Schema to GBNF automatically via <code>json_schema_to_grammar</code>. So you hand it a schema
+and it hands the sampler a constraint.</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>You provide</th><th>llama.cpp does</th><th>Result</th></tr></thead>
+  <tbody>
+    <tr><td><code>tools: [...]</code> on <code>/v1/chat/completions</code></td><td>Injects them via the template, builds a lazy grammar</td><td>Well-formed calls, OpenAI-shaped response</td></tr>
+    <tr><td><code>response_format: json_schema</code></td><td>Converts schema → GBNF, constrains sampling</td><td>Output always matches the schema</td></tr>
+    <tr><td>A raw <code>grammar</code> string</td><td>Applies it directly</td><td>Arbitrary structure — CSV, DSLs, anything</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Sources: <a href="https://deepwiki.com/ggml-org/llama.cpp/8.1-grammar-and-structured-output">llama.cpp grammar and structured output</a>; <a href="https://github.com/ggml-org/llama.cpp/discussions/12204">Grammar, reasoning and jinja</a>.</span>
+
+<div class="note">
+  <span class="tag">Lazy grammars, and why they matter</span>
+  <p>A model that must reason before calling a tool cannot be constrained to JSON from the first
+  token — you would forbid the reasoning. Lazy grammars activate only once a trigger appears (the
+  tool-call opening token), leaving prose unconstrained before it. This is what lets constrained
+  decoding coexist with thinking models, and it is why "just force JSON always" is the wrong
+  implementation.</p>
+</div>
+
+<h2>What constraint does and does not fix</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Failure</th><th>Grammar fixes?</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>Prose wrapped around the JSON</td><td><strong>Yes</strong></td><td>Those tokens become illegal</td></tr>
+    <tr><td>Markdown fences around the object</td><td><strong>Yes</strong></td><td>Same</td></tr>
+    <tr><td>Missing required field</td><td><strong>Yes</strong></td><td>The grammar cannot reach a valid end state without it</td></tr>
+    <tr><td>Wrong type — string where number expected</td><td><strong>Yes</strong></td><td>Schema encodes the type</td></tr>
+    <tr><td>Invented tool name</td><td>Yes, if enumerated</td><td>Constrain the name field to known tools</td></tr>
+    <tr><td><strong>Plausible but wrong argument value</strong></td><td><strong>No</strong></td><td>Perfectly valid JSON containing the wrong path</td></tr>
+    <tr><td><strong>Calling the wrong tool entirely</strong></td><td><strong>No</strong></td><td>Valid call, bad judgement</td></tr>
+    <tr><td><strong>Not calling a tool when it should</strong></td><td><strong>No</strong></td><td>Nothing to constrain</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The line is sharp and worth internalising. <strong>Grammars guarantee syntax. They do not
+supply judgement.</strong> Everything below the line in that table is model capability, and by
+Lesson 6 it lives on the reasoning curve — the first thing aggressive quantization takes away.</p>
+
+<h2>Why small models fail at tools</h2>
+
+<p>Pick a tool, extract arguments from context, format them, and stop. That is a multi-step chain,
+and the two forces you already know both act on it:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Force</th><th>From</th><th>Effect on tool calling</th></tr></thead>
+  <tbody>
+    <tr><td>Quantization damages reasoning first</td><td>Lesson 6</td><td>GSM8K −9.3 at 3-bit while recall holds — tool selection degrades before the model looks dumber</td></tr>
+    <tr><td>Errors compound along a chain</td><td>Lesson 6</td><td>Four steps at 95% each is 81% end-to-end</td></tr>
+    <tr><td>Constrained decoding removes syntax errors</td><td>This lesson</td><td>Leaves only judgement errors — which is the good trade</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The practical consequence for an 8 GB machine: a 4B model at Q4 with grammar-constrained output
+and temperature 0 will produce well-formed calls essentially always, and choose the <em>right</em>
+tool markedly less often than a larger model would. Design the harness so wrong-tool is cheap to
+recover from, because it is the failure you cannot engineer away.</p>
+
+<h2>What this means for pi</h2>
+
+<p>pi's <code>registerTool</code> hands the model a name, a description and a schema. Given the
+above, three things follow immediately:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Do</th><th>Because</th></tr></thead>
+  <tbody>
+    <tr><td>Serve with <code>--jinja</code> and a tool-aware template</td><td>Otherwise the native tool path is silently unavailable</td></tr>
+    <tr><td>Pass tools through <code>/v1/chat/completions</code>, not the system prompt</td><td>Gets you the template injection and the lazy grammar together</td></tr>
+    <tr><td>Enumerate tool names in the constraint</td><td>Removes hallucinated tools — a whole failure class, free</td></tr>
+    <tr><td>Verify arguments in the handler, not the prompt</td><td>Grammars cannot check that a path exists; your code can</td></tr>
+    <tr><td><strong>Throw</strong> when a tool fails — do not return the error as content</td><td>pi's stated convention: it catches the throw and surfaces it to the model as a failed tool result. Returning an error string as normal content makes failure indistinguishable from success</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>That last one is the highest-leverage harness decision in this lesson. A malformed call is
+prevented by a grammar; a <em>wrong</em> call can only be fixed by letting the model see what went
+wrong and try again. Which costs a turn — and you now know exactly what a turn costs.</p>
+
+<div class="sidenote">
+  <strong>Mechanism matters here.</strong> pi's agent README is explicit: <em>"Throw an error when a
+  tool fails. Do not return error messages as content."</em> The runtime converts the thrown error
+  into a failed tool result the model can see and react to. Returning an error <em>as content</em>
+  instead makes a failure look like a successful call that returned some text — which the model will
+  cheerfully build on.
+</div>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <span class="qnum">Question 1</span>
+  <p class="q">Grammar-constrained decoding guarantees which of these?</p>
+  <div class="options">
+    <button class="opt" data-correct>Syntactically valid output</button>
+    <button class="opt">Semantically correct arguments</button>
+    <button class="opt">The appropriate tool chosen</button>
+    <button class="opt">Improved reasoning quality</button>
+  </div>
+  <div class="explain">
+    <strong>Syntax only.</strong> The grammar zeroes out tokens that would break structure, so
+    malformed JSON becomes unrepresentable. It has no opinion about whether the file path is real or
+    the tool was the right one — that is judgement, and judgement is model capability.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 2</span>
+  <p class="q">Why do lazy grammars exist rather than constraining output from the first token?</p>
+  <div class="options">
+    <button class="opt" data-correct>To permit reasoning first</button>
+    <button class="opt">To reduce sampling overhead</button>
+    <button class="opt">To support streaming responses</button>
+    <button class="opt">To allow multiple tool calls</button>
+  </div>
+  <div class="explain">
+    <strong>To permit reasoning first.</strong> Constraining to JSON from token one forbids the
+    model from thinking before it acts. Lazy grammars activate on a trigger token, so prose flows
+    freely until the call begins and is rigidly constrained thereafter.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 3</span>
+  <p class="q">A tool-trained model is served without a tool-aware chat template. What happens?</p>
+  <div class="options">
+    <button class="opt" data-correct>Silent fallback to prompting</button>
+    <button class="opt">The server refuses to start</button>
+    <button class="opt">Tool calls raise an error</button>
+    <button class="opt">Nothing, templates are optional</button>
+  </div>
+  <div class="explain">
+    <strong>Silent fallback.</strong> The tool definitions never reach the model in the form it was
+    trained on, so its native tool tokens are never triggered and it improvises JSON as plain text.
+    Nothing errors — you just get markedly worse reliability and no indication why.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 4</span>
+  <p class="q">Your harness gets a well-formed call to the wrong tool. Best response?</p>
+  <div class="options">
+    <button class="opt" data-correct>Return an informative error</button>
+    <button class="opt">Tighten the output grammar</button>
+    <button class="opt">Lower the sampling temperature</button>
+    <button class="opt">Raise the quantization level</button>
+  </div>
+  <div class="explain">
+    <strong>Return an informative error.</strong> Tool choice is judgement, which no grammar or
+    sampler setting touches. Feeding the failure back gives the model a turn to correct itself — the
+    only available fix. In pi specifically, <em>throw</em> from the handler; the runtime turns that
+    into a failed tool result. Higher-precision weights help at the margin but do not eliminate it.
+  </div>
+</div>
+
+<div class="scoreboard" data-scoreboard></div>
+
+<h2>Next</h2>
+
+<p>You now know what one turn costs (Lesson 2), what it holds (Lesson 3), and what it can reliably
+emit (this lesson). <a href="0009-anatomy-of-a-turn.html">Lesson 9</a> puts them together against
+pi's actual architecture — what really goes over the wire, and where each cost lands.</p>
+
+<div class="ask">
+  <strong>Your teacher is one message away.</strong> Worth asking: "show me a GBNF grammar for a
+  tool call", "how do I enumerate tool names in a schema?", or "how should a pi tool report a
+  recoverable failure?"
+</div>
+
+<nav class="footer-nav">
+  <strong>Workspace</strong>
+  <ul>
+    <li><a href="0007-templates-and-sampling.html">Lesson 7 · Templates and Sampling</a></li>
+    <li><a href="0006-the-quantization-ladder.html">Lesson 6 · The Quantization Ladder</a></li>
+    <li><a href="../reference/napkin-math.html">Reference · Napkin math cheat sheet</a></li>
+    <li><a href="../GLOSSARY.md">Glossary</a> · <a href="../RESOURCES.md">Resources</a> · <a href="../MISSION.md">Mission</a></li>
+  </ul>
+</nav>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

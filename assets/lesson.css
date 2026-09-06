@@ -1,0 +1,370 @@
+/* ============================================================
+   Shared stylesheet for the Local LLM teaching workspace.
+   Every lesson and reference doc links this file.
+   Tufte-influenced: generous margins, serif body, sidenotes,
+   restrained colour. Designed to print cleanly.
+   ============================================================ */
+
+:root {
+  --ink:        #1a1815;
+  --ink-soft:   #55504a;
+  --ink-faint:  #8b847c;
+  --paper:      #fffefb;
+  --paper-alt:  #f6f3ec;
+  --rule:       #ddd8ce;
+  --accent:     #7a2e1d;   /* oxide red, for emphasis + links */
+  --accent-soft:#f0e4e0;
+  --good:       #2c5f3f;
+  --good-soft:  #e2ede6;
+  --bad:        #8a2b2b;
+  --bad-soft:   #f3e2e2;
+  --mono: "SF Mono", "JetBrains Mono", "Menlo", "Consolas", monospace;
+  --serif: "Iowan Old Style", "Palatino Linotype", "Palatino", "Georgia", serif;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", system-ui, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink:        #e8e3da;
+    --ink-soft:   #a8a199;
+    --ink-faint:  #736d66;
+    --paper:      #16150f;
+    --paper-alt:  #201e17;
+    --rule:       #38352c;
+    --accent:     #e08a6a;
+    --accent-soft:#2e211b;
+    --good:       #7fc09a;
+    --good-soft:  #1b2a21;
+    --bad:        #e08585;
+    --bad-soft:   #2c1b1b;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--serif);
+  font-size: 19px;
+  line-height: 1.62;
+  -webkit-font-smoothing: antialiased;
+}
+
+.page {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 4.5rem 1.75rem 8rem;
+}
+
+/* ---------- masthead ---------- */
+
+.masthead { margin-bottom: 3.5rem; }
+
+.eyebrow {
+  font-family: var(--sans);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin: 0 0 0.9rem;
+}
+
+h1 {
+  font-size: 2.6rem;
+  line-height: 1.12;
+  font-weight: 400;
+  letter-spacing: -0.018em;
+  margin: 0 0 0.7rem;
+}
+
+.standfirst {
+  font-size: 1.18rem;
+  line-height: 1.5;
+  color: var(--ink-soft);
+  font-style: italic;
+  margin: 0;
+  max-width: 34rem;
+}
+
+.meta {
+  font-family: var(--sans);
+  font-size: 0.78rem;
+  color: var(--ink-faint);
+  margin-top: 1.6rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--rule);
+  display: flex;
+  gap: 1.4rem;
+  flex-wrap: wrap;
+}
+
+/* ---------- structure ---------- */
+
+h2 {
+  font-family: var(--sans);
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 3.6rem 0 1.1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+h3 {
+  font-size: 1.3rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 2.4rem 0 0.7rem;
+}
+
+p { margin: 0 0 1.15rem; }
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px solid var(--rule);
+}
+a:hover { border-bottom-color: var(--accent); }
+
+strong { font-weight: 600; }
+
+code, .mono {
+  font-family: var(--mono);
+  font-size: 0.85em;
+  background: var(--paper-alt);
+  padding: 0.12em 0.36em;
+  border-radius: 3px;
+}
+
+hr {
+  border: none;
+  border-top: 1px solid var(--rule);
+  margin: 3rem 0;
+}
+
+/* ---------- the one big idea ---------- */
+
+.keystone {
+  background: var(--paper-alt);
+  border-left: 3px solid var(--accent);
+  padding: 1.6rem 1.8rem;
+  margin: 2.2rem 0;
+  border-radius: 0 4px 4px 0;
+}
+.keystone .label {
+  font-family: var(--sans);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--accent);
+  display: block;
+  margin-bottom: 0.7rem;
+}
+.keystone p:last-child { margin-bottom: 0; }
+
+/* ---------- formula display ---------- */
+
+.formula {
+  font-family: var(--mono);
+  font-size: 1.02rem;
+  text-align: center;
+  background: var(--paper-alt);
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  padding: 1.5rem 1.2rem;
+  margin: 1.8rem 0;
+  line-height: 2.1;
+  overflow-x: auto;
+}
+.formula .num { color: var(--accent); font-weight: 600; }
+.formula .cap { font-family: var(--sans); font-size: 0.72rem; letter-spacing: 0.08em;
+                text-transform: uppercase; color: var(--ink-faint); display: block;
+                margin-top: 0.9rem; }
+/* A caption leading a formula rather than closing one. */
+.formula .cap:first-child { margin-top: 0; margin-bottom: 0.5rem; }
+.formula .op { color: var(--ink-faint); }
+
+/* Left-aligned variant, for commands and data you are meant to copy. */
+.formula.mono-block {
+  text-align: left;
+  font-size: 0.88rem;
+  line-height: 1.85;
+  padding: 1.2rem 1.3rem;
+}
+.formula.mono-block.small { font-size: 0.72rem; line-height: 1.6; word-break: break-all; }
+
+/* ---------- addendum ----------
+   Appended to an existing lesson when the facts underneath it
+   change. Never rewrites the lesson; states the delta and dates
+   it, so the original reasoning stays readable. */
+
+.addendum {
+  border: 1px solid var(--accent);
+  border-left-width: 4px;
+  border-radius: 5px;
+  padding: 1.4rem 1.6rem;
+  margin: 3rem 0 2rem;
+  background: var(--paper-alt);
+}
+.addendum > .label {
+  font-family: var(--sans);
+  font-size: 0.66rem; font-weight: 700; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--accent);
+  display: block; margin-bottom: 0.2rem;
+}
+.addendum > .when {
+  font-family: var(--sans);
+  font-size: 0.74rem; color: var(--ink-faint);
+  display: block; margin-bottom: 0.9rem;
+}
+.addendum h3 { margin-top: 1.4rem; }
+.addendum > p:last-child, .addendum > div:last-child { margin-bottom: 0; }
+
+/* ---------- sidenote ---------- */
+
+.sidenote {
+  font-family: var(--sans);
+  font-size: 0.86rem;
+  line-height: 1.5;
+  color: var(--ink-soft);
+  border-left: 2px solid var(--rule);
+  padding: 0.15rem 0 0.15rem 1.1rem;
+  margin: 1.6rem 0;
+}
+.sidenote strong { color: var(--ink); }
+
+/* ---------- tables ---------- */
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--sans);
+  font-size: 0.87rem;
+  margin: 1.8rem 0;
+}
+thead th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  padding: 0 0.7rem 0.6rem;
+  border-bottom: 1.5px solid var(--rule);
+}
+tbody td {
+  padding: 0.68rem 0.7rem;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+}
+tbody tr:last-child td { border-bottom: none; }
+/* The row the surrounding paragraph is actually about. */
+tbody tr.hi td { background: var(--accent-soft); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--mono); font-size: 0.82rem; }
+.table-scroll { overflow-x: auto; margin: 1.8rem 0; }
+.table-scroll table { margin: 0; }
+
+/* ---------- callouts ---------- */
+
+.note {
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  padding: 1.1rem 1.3rem;
+  margin: 1.8rem 0;
+  font-size: 0.94rem;
+  background: var(--paper-alt);
+}
+.note .tag {
+  font-family: var(--sans);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  display: block;
+  margin-bottom: 0.5rem;
+}
+.note p:last-child { margin-bottom: 0; }
+
+/* ---------- citations ---------- */
+
+.cite {
+  font-family: var(--sans);
+  font-size: 0.78rem;
+  color: var(--ink-faint);
+  display: block;
+  margin-top: -0.5rem;
+  margin-bottom: 1.6rem;
+}
+.cite a { color: var(--ink-soft); }
+
+/* ---------- primary source block ---------- */
+
+.source {
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--good);
+  border-radius: 0 5px 5px 0;
+  padding: 1.3rem 1.5rem;
+  margin: 2rem 0;
+  background: var(--good-soft);
+}
+.source .tag {
+  font-family: var(--sans);
+  font-size: 0.66rem; font-weight: 700; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--good);
+  display: block; margin-bottom: 0.6rem;
+}
+.source .title { font-size: 1.05rem; font-weight: 600; display: block; margin-bottom: 0.35rem; }
+.source p { font-size: 0.9rem; color: var(--ink-soft); margin: 0; font-family: var(--sans); }
+
+/* ---------- footer nav ---------- */
+
+.footer-nav {
+  margin-top: 4.5rem;
+  padding-top: 1.6rem;
+  border-top: 1px solid var(--rule);
+  font-family: var(--sans);
+  font-size: 0.87rem;
+}
+.footer-nav ul { list-style: none; padding: 0; margin: 0.8rem 0 0; }
+.footer-nav li { margin-bottom: 0.45rem; }
+
+.ask {
+  margin-top: 2.5rem;
+  padding: 1.2rem 1.4rem;
+  border: 1px dashed var(--rule);
+  border-radius: 5px;
+  font-family: var(--sans);
+  font-size: 0.9rem;
+  color: var(--ink-soft);
+  background: transparent;
+}
+.ask strong { color: var(--ink); }
+
+/* ---------- print ---------- */
+
+@media print {
+  :root {
+    --ink: #000; --ink-soft: #333; --ink-faint: #666;
+    --paper: #fff; --paper-alt: #f4f4f4; --rule: #ccc; --accent: #000;
+  }
+  body { font-size: 11pt; }
+  .page { max-width: none; padding: 0; }
+  .quiz, .calc, .ask { break-inside: avoid; }
+  h2, h3 { break-after: avoid; }
+  a { border-bottom: none; }
+  a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 0.75em; color: #666; }
+  .no-print { display: none !important; }
+}
+
+@media (max-width: 640px) {
+  body { font-size: 17px; }
+  .page { padding: 2.5rem 1.1rem 5rem; }
+  h1 { font-size: 2rem; }
+}

@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 19 · Embeddings and Retrieval</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+<link rel="stylesheet" href="../assets/calc.css">
+</head>
+<body>
+<div class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 19 · Local LLM Fluency</p>
+  <h1>Embeddings and Retrieval</h1>
+  <p class="standfirst">Lesson 16 told you to use retrieval instead of fine-tuning. Lesson 18 named
+  note-taking as the one tactic you had not built. Both need an embedding model — a second resident
+  model with a cost shape unlike anything else in this workspace.</p>
+  <div class="meta">
+    <span>~22 minutes</span>
+    <span>Prerequisites: <a href="0017-input-and-output-tokens.html">Lesson 17</a>, <a href="0014-reading-a-model-card.html">Lesson 14</a></span>
+    <span><a href="../MISSION.md">Mission</a> · <a href="../GLOSSARY.md">Glossary</a> · <a href="../reference/napkin-math.html">Cheat sheet</a></span>
+  </div>
+</header>
+
+<div class="keystone">
+  <span class="label">The one idea</span>
+  <p>An embedding model is a generation model with the head cut off. You run <strong>prefill and
+  then stop</strong> — pool the hidden states into one vector and discard everything else.</p>
+  <p>So embedding is <strong>pure prefill: no decode, no sampling, and no session KV cache to
+  carry</strong>. On your M1 that means it runs at the 118 tok/s end of
+  <a href="0017-input-and-output-tokens.html">Lesson 17's</a> asymmetry rather than the 14 tok/s
+  end. It is the one local workload that is unambiguously on the cheap side.</p>
+</div>
+
+<h2>What you get back</h2>
+
+<p>One vector per input, L2-normalized, with similarity measured as a dot product. For
+WeMM-Embedding-2B that vector is <strong>2,048 numbers</strong>; for the 9B it is 4,096.
+"Similar" means pointing in a similar direction — nothing more mystical than that.</p>
+
+<p>The models you named accept text, images, video and visual documents, and return the same kind of
+vector for all of them, in one shared space. That is what "universal multimodal embedding" means:
+a screenshot and the sentence describing it land near each other.
+<span class="cite">"WeMM-Embedding-2B is a universal multimodal embedding model built on Qwen3.5. It accepts text, images, videos, visual documents, and interleaved multimodal inputs, and returns a 2,048-dimensional L2-normalized embedding. <strong>Audio input is not supported.</strong>" — <a href="https://huggingface.co/tencent/WeMM-Embedding-2B">tencent/WeMM-Embedding-2B</a> model card.</span></p>
+
+<h2>The Lesson 14 pass on what you found</h2>
+
+<p>You named two community GGUF repos. Both are real, and both are quantizations of Tencent
+originals — <code>tencent/WeMM-Embedding-2B</code> and <code>-9B</code>. There is also a
+<strong>4B you did not mention</strong>, and it turns out to matter. Everything below is read from
+the Hugging Face file API and each model's <code>config.json</code>, not from a README:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th></th><th class="num">2B</th><th class="num">4B</th><th class="num">9B</th></tr></thead>
+  <tbody>
+    <tr><td>Embedding dimensions</td><td class="num">2,048</td><td class="num">2,560</td><td class="num">4,096</td></tr>
+    <tr><td>Layers / KV heads / head-dim</td><td class="num">24 / 2 / 256</td><td class="num">32 / 4 / 256</td><td class="num">32 / 4 / 256</td></tr>
+    <tr><td>Q4_K_M weights</td><td class="num">1.560 GB</td><td class="num">3.066 GB</td><td class="num">5.628 GB</td></tr>
+    <tr><td>Vision tower (mmproj)</td><td class="num">0.671 GB</td><td class="num">0.367 GB</td><td class="num">0.624 GB</td></tr>
+    <tr class="hi"><td><strong>Total resident, multimodal</strong></td><td class="num"><strong>2.231 GB</strong></td><td class="num"><strong>3.433 GB</strong></td><td class="num"><strong>6.252 GB</strong></td></tr>
+    <tr><td>Fits your 4.2 GB budget?</td><td class="num">Yes — 1.97 spare</td><td class="num">Yes — 0.77 spare</td><td class="num"><strong>No — over by 2.05</strong></td></tr>
+    <tr><td>MMEB-v2 average</td><td class="num">77.9</td><td class="num">79.2</td><td class="num">80.6</td></tr>
+    <tr><td>MMEB-v3, all 190 tasks</td><td class="num">56.0</td><td class="num">58.2</td><td class="num">59.5</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Sizes from the HF file API for <a href="https://huggingface.co/DreamBlooms/WeMM-Embedding-2B-GGUF">DreamBlooms/WeMM-Embedding-2B-GGUF</a>, <a href="https://huggingface.co/TuTuCSF/WeMM-Embedding-4B-GGUF">TuTuCSF/WeMM-Embedding-4B-GGUF</a> and <a href="https://huggingface.co/TuTuCSF/WeMM-Embedding-9B-GGUF">TuTuCSF/WeMM-Embedding-9B-GGUF</a>. Architecture from each upstream <code>config.json</code>. Scores from the upstream cards, quoting the <a href="https://arxiv.org/abs/2608.24053">technical report</a> — vendor-reported, so directional (Lesson 14).</span>
+
+<div class="keystone">
+  <span class="label">The verdict on the two you picked</span>
+  <p><strong>The 9B is not an option on the 8 GB machine.</strong> At 6.252 GB multimodal it is
+  2.05 GB over your entire budget — before any generation model is loaded beside it.</p>
+  <p>And the score gap does not argue for it anyway: <strong>3.5 points of MMEB-v3 for 3.6× the
+  weights</strong>. The <strong>4B is the one worth your attention</strong> — it fits, and it takes
+  you 63% of the way from the 2B to the 9B for twice the size. Start on the 2B; move to the 4B if
+  retrieval quality actually disappoints you.</p>
+</div>
+
+<div class="sidenote">
+  <strong>Two things the vision tower teaches you.</strong> First, it is nearly
+  <em>size-independent</em>: 0.671 GB on the 2B and 0.624 GB on the 9B. So it is 43% of the 2B's
+  weight and 11% of the 9B's — a fixed tax that hurts the small model far more. Second, it is a
+  <em>separate file</em>. If you only ever embed text, do not load it, and the 2B drops to 1.560 GB.
+  <a href="0015-the-landscape.html">Lesson 15</a> warned that people budget for <code>mmproj</code>
+  by accident; here it is the difference between comfortable and tight.
+</div>
+
+<h2>Matryoshka: the free 8× win</h2>
+
+<p>These models are trained so that the <em>first N</em> components of the vector are themselves a
+usable embedding. Truncate and renormalize, and you have a smaller vector that still works. The
+config lists the valid rungs:</p>
+
+<div class="formula">
+  <span class="cap">matryoshka_dimensions</span>
+  <span class="num">64</span> · <span class="num">128</span> · <span class="num">256</span> ·
+  <span class="num">512</span> · <span class="num">1024</span> · <span class="num">2048</span>
+  <span class="cap">2B — the 4B ends at 2560, the 9B at 4096</span>
+</div>
+
+<p>And the payoff, stated by the model card: <strong>"On MMEB-v2, 256-dimensional embeddings retain
+98.7% of the full-dimensional image and video performance."</strong> Eight times smaller, for 1.3%.
+There is almost no other lever in this workspace with that shape.</p>
+
+<p>Which turns the index into napkin math you already know how to do — count × bytes:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>100,000 chunks stored as</th><th class="num">Bytes each</th><th class="num">Index size</th></tr></thead>
+  <tbody>
+    <tr><td>2048-dim float32</td><td class="num">8,192</td><td class="num">819 MB</td></tr>
+    <tr><td>2048-dim float16</td><td class="num">4,096</td><td class="num">410 MB</td></tr>
+    <tr class="hi"><td><strong>256-dim float32</strong></td><td class="num">1,024</td><td class="num"><strong>102 MB</strong></td></tr>
+    <tr><td>256-dim int8</td><td class="num">256</td><td class="num">26 MB</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>On a machine with 4.2 GB to spend, an 819 MB index is a fifth of everything you have. A 102 MB one
+is a rounding error. Truncation is not an optimisation to reach for later; it is the default.</p>
+
+<h2>The cost of building it</h2>
+
+<div class="calc" data-vecstore></div>
+
+<div class="reveal">
+  <span class="tag">Predict first</span>
+  <p class="prompt">The calculator says a 5 MB corpus takes about an hour to index on the M1 with the
+  2B. Push the slider to 100 MB — roughly a large monorepo's source. Before you do: does that become
+  an afternoon, or something else? And what is the fix?</p>
+  <button class="show-answer">Reveal</button>
+  <div class="answer">
+    <p><strong>About 20 hours.</strong> Indexing is linear in tokens and the M1's prefill rate is
+    what it is — Lesson 17's asymmetry helps you here, but a fixed 118 tok/s on a 7B does not become
+    fast by being on the cheap side of a ratio. This is a genuinely slow job on this machine.</p>
+    <p>The fix falls out of having two machines. <strong>The index is portable; the model is
+    not.</strong> Build on the 64 GB machine, where prefill is several times faster and the 4B or 9B
+    is affordable, then copy the result to the laptop. A 100 MB corpus at 256-dim int8 comes to
+    <strong>57,445 chunks and a 15 MB file</strong> — you could email it to yourself, and the travel
+    machine then only needs
+    to embed <em>queries</em>, which are one short string each and effectively instant.</p>
+    <p>That asymmetry — expensive to build once, cheap to query forever — is what makes retrieval
+    work on hardware that could never fine-tune anything.</p>
+  </div>
+</div>
+
+<h2>The trap: can you actually use the multimodal half?</h2>
+
+<p>Here is where a model card stops being enough. These are <em>community</em> GGUF conversions of a
+model whose own documentation shows vLLM and SGLang, and never mentions llama.cpp. Before building
+anything on them, three questions had to be answered from source.</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Question</th><th>Answer, verified</th></tr></thead>
+  <tbody>
+    <tr><td>Does llama.cpp know this architecture?</td>
+        <td><strong>Yes.</strong> <code>LLM_ARCH_QWEN35</code> maps to the string <code>"qwen35"</code> in <code>llama-arch.cpp</code>, which is what the GGUF metadata key <code>qwen35.pooling_type</code> targets.</td></tr>
+    <tr><td>Is <code>pooling_type=3</code> the right thing?</td>
+        <td><strong>Yes.</strong> <code>LLAMA_POOLING_TYPE_LAST = 3</code> in <code>llama.h</code> — last-token pooling, which is what the 2B repo says it injected.</td></tr>
+    <tr class="hi"><td><strong>Can you embed an <em>image</em>?</strong></td>
+        <td><strong>Through the server, yes. Through the CLI, no.</strong> See below.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><code>llama-embedding</code>, the obvious tool, contains <strong>no reference to
+<code>mmproj</code> or <code>mtmd</code> at all</strong> — it is text-only, and will silently give
+you text embeddings from a multimodal model. <code>llama-server</code>'s
+<code>/embeddings</code> endpoint <em>does</em> pass its multimodal context through to the
+tokenizer, and accepts a non-OpenAI object form:</p>
+
+<div class="formula mono-block small">
+{"input": {"prompt_string": "&lt;__media__&gt;", "multimodal_data": ["&lt;base64 of the image&gt;"]}}
+</div>
+
+<p>The number of <code>&lt;__media__&gt;</code> markers must match the number of items in
+<code>multimodal_data</code>, and if the server was started without <code>--mmproj</code> you get
+<em>"Multimodal data provided, but model does not support multimodal requests."</em>
+<span class="cite">Verified in <a href="https://github.com/ggml-org/llama.cpp/blob/master/tools/server/server-common.cpp"><code>tokenize_input_subprompt()</code></a>, which the <code>/embeddings</code> handler calls with the <code>mtmd</code> context; marker rules from the <a href="https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md">server README</a>, which also advises checking <code>/models</code> for the <code>multimodal</code> capability first.</span></p>
+
+<div class="note">
+  <span class="tag">Read the repos, not just the model</span>
+  <p><a href="https://huggingface.co/TuTuCSF/WeMM-Embedding-9B-GGUF">TuTuCSF/WeMM-Embedding-9B-GGUF</a>
+  has <strong>a README containing nothing but licence frontmatter</strong> — no usage, no conversion
+  notes, no statement of what was tested — against 722 downloads. The 2B repo is better: it documents
+  the pooling-type injection and the separate vision tower. But the rest of <em>its</em> README is
+  copy-pasted from upstream, so its Python examples load
+  <code>tencent/WeMM-Embedding-2B</code> — the original weights, not the GGUF you downloaded. Run
+  those examples and you will fetch several gigabytes of the wrong thing and never notice.</p>
+  <p>This is <a href="0014-reading-a-model-card.html">Lesson 14</a> in miniature: the quantizer's
+  repo and the model's repo are different claims, by different people, with different evidence
+  behind them.</p>
+</div>
+
+<h2>Hands on, within 4.2 GB</h2>
+
+<div class="formula mono-block">
+<span class="cap">text only — 1.56 GB resident</span>
+llama-server -m WeMM-Embedding-2B-Q4_K_M.gguf \<br>
+&nbsp;&nbsp;--embeddings --pooling last --embd-normalize 2 -c 4096<br><br>
+<span class="cap">with images — 2.23 GB resident</span>
+llama-server -m WeMM-Embedding-2B-Q4_K_M.gguf \<br>
+&nbsp;&nbsp;--mmproj mmproj-WeMM-Embedding-2B-BF16.gguf \<br>
+&nbsp;&nbsp;--embeddings --pooling last --embd-normalize 2 -c 4096
+</div>
+
+<p><code>--pooling last</code> matches what the repo baked into the metadata, and passing it
+explicitly means you are not trusting a metadata key you did not write.
+<code>--embd-normalize 2</code> is Euclidean, which is what "L2-normalized" on the model card means —
+so cosine similarity becomes a plain dot product.
+<span class="cite">Flag names and the <code>--embd-normalize</code> semantics (<code>-1</code>=none, <code>0</code>=max-abs int16, <code>1</code>=taxicab, <code>2</code>=euclidean) read from <a href="https://github.com/ggml-org/llama.cpp/blob/master/common/arg.cpp"><code>common/arg.cpp</code></a>.</span></p>
+
+<p>Then truncate to 256 dimensions <em>and renormalize</em> — truncation breaks the unit length, and
+skipping the renormalize is the single most common way to get quietly wrong similarities.</p>
+
+<div class="keystone">
+  <span class="label">Where this lands in the mission</span>
+  <p><a href="0016-fine-tuning-and-soup.html">Lesson 16</a> said weights are a bad database and to
+  use retrieval instead. <a href="0018-the-context-window.html">Lesson 18</a> said structured
+  note-taking — persisting state <em>outside</em> the window — was the one tactic with nothing built
+  for it. This is the missing piece for both.</p>
+  <p>A pi plugin that indexes your repo and registers a <code>search_code</code> tool converts
+  <strong>permanent context cost into on-demand context cost</strong>. Instead of reading three files
+  into the window and paying for them on every subsequent turn (Lesson 17's ratchet), the agent
+  retrieves three <em>chunks</em> when it needs them. On a machine where the attention ceiling is
+  16,000 tokens, that is the difference between a session that lasts and one that does not.</p>
+</div>
+
+<hr>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <span class="qnum">Question 1</span>
+  <p class="q">Why is embedding cheaper per token than generation on the same machine?</p>
+  <div class="options">
+    <button class="opt">Embedding models are always smaller</button>
+    <button class="opt" data-correct>It is prefill with no decode</button>
+    <button class="opt">Embeddings skip the attention layers</button>
+    <button class="opt">Pooling avoids reading all weights</button>
+  </div>
+  <div class="explain">
+    <strong>It is prefill and nothing else.</strong> You run the forward pass, pool the hidden states,
+    and stop — there is no autoregressive loop, so none of the per-token weight passes that make
+    decode bandwidth-bound. Size helps too, but the regime is the reason.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 2</span>
+  <p class="q">Why does the 9B fail on your travel machine while the 4B does not?</p>
+  <div class="options">
+    <button class="opt">Its context window is far larger</button>
+    <button class="opt" data-correct>6.25 GB exceeds the whole budget</button>
+    <button class="opt">Its vision tower is much bigger</button>
+    <button class="opt">It needs float16 weights to run</button>
+  </div>
+  <div class="explain">
+    <strong>Its weights alone exceed the budget.</strong> 5.628 GB plus a 0.624 GB vision tower is
+    6.252 GB against 4.2 GB of usable memory — over by 2.05 GB, before any generation model. The 4B
+    lands at 3.433 GB and fits, with 0.77 GB to spare.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 3</span>
+  <p class="q">You truncate 2048-dim vectors to 256. What must you also do?</p>
+  <div class="options">
+    <button class="opt">Re-encode the corpus at 256</button>
+    <button class="opt">Switch the pooling type to mean</button>
+    <button class="opt" data-correct>Renormalize the truncated vector</button>
+    <button class="opt">Scale the similarity threshold up</button>
+  </div>
+  <div class="explain">
+    <strong>Renormalize.</strong> Cutting components off a unit vector leaves it shorter than unit
+    length, so dot products stop being cosine similarities. Re-encoding is unnecessary — that is the
+    entire point of Matryoshka training, and 256 dimensions retain 98.7% of full performance.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 4</span>
+  <p class="q">You run <code>llama-embedding</code> with a multimodal model and no mmproj. Result?</p>
+  <div class="options">
+    <button class="opt">An error naming the missing projector</button>
+    <button class="opt" data-correct>Text embeddings, with no warning</button>
+    <button class="opt">Vectors of the wrong dimensionality</button>
+    <button class="opt">The model refuses to load at all</button>
+  </div>
+  <div class="explain">
+    <strong>Perfectly good text embeddings, silently.</strong> <code>llama-embedding</code> has no
+    multimodal support at all, so nothing complains — you simply never get the capability you chose
+    the model for. Image embedding needs <code>llama-server --mmproj</code> and the
+    <code>multimodal_data</code> object form.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 5</span>
+  <p class="q">Indexing 100 MB on the M1 takes about 20 hours. Best response?</p>
+  <div class="options">
+    <button class="opt" data-correct>Index elsewhere, copy the index</button>
+    <button class="opt">Use fewer dimensions when encoding</button>
+    <button class="opt">Raise the chunk size to 1024</button>
+    <button class="opt">Quantize the model down to Q2</button>
+  </div>
+  <div class="explain">
+    <strong>Build it on the other machine and carry the file.</strong> The index is portable and
+    small — 100 MB of corpus at 256-dim int8 is about 15 MB. Fewer dimensions shrinks storage but
+    not encoding time, since truncation happens after the forward pass. Bigger chunks reduce the
+    chunk count but not the token count, which is what the time depends on.
+  </div>
+</div>
+
+<div class="scoreboard" data-scoreboard></div>
+
+<div class="source">
+  <span class="tag">Read this next</span>
+  <span class="title">WeMM-Embedding: WeChat Multi-Modal Embedding Technical Report (arXiv 2608.24053)</span>
+  <p>The primary source behind every score in this lesson, and the place to check what MMEB-v2 and
+  v3 actually measure before trusting a leaderboard row. Read the evaluation section against
+  Lesson 14's scepticism — note that the audio column is 0.0 for these models and the card says so
+  plainly, which is a good sign about the rest of the table.
+  <a href="https://arxiv.org/abs/2608.24053">arxiv.org/abs/2608.24053</a></p>
+</div>
+
+<div class="ask">
+  <strong>Your teacher is one message away.</strong> Worth asking: "design the chunking strategy for
+  my repo", "write the pi plugin that registers <code>search_code</code>", "what would a hybrid
+  keyword-plus-vector search cost me?", or "check whether Ollama's embedding endpoint exposes the
+  multimodal path at all".
+</div>
+
+<div class="addendum">
+  <span class="label">Addendum · the 48 GB M4</span>
+  <span class="when">Added 2026-09-05 — the lesson above stands as written; this is what a third machine changes.</span>
+  <p>The verdict above — that the 9B is not an option — was a verdict about the <strong>8 GB
+  machine</strong>. On the 48 GB M4 all three sizes fit, and the interesting question changes from
+  "which one" to "build or carry".</p>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Model, multimodal</th><th class="num">Resident</th><th class="num">8 GB M1</th><th class="num">48 GB M4</th></tr></thead>
+    <tbody>
+      <tr><td>WeMM-Embedding-2B</td><td class="num">2.231 GB</td><td class="num">fits</td><td class="num">trivial</td></tr>
+      <tr><td>WeMM-Embedding-4B</td><td class="num">3.433 GB</td><td class="num">tight</td><td class="num">trivial</td></tr>
+      <tr class="hi"><td><strong>WeMM-Embedding-9B</strong></td><td class="num">6.252 GB</td><td class="num">no</td><td class="num"><strong>fits easily</strong></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>Better than that: <strong>the embedder and a generation model fit at the same time.</strong>
+  Ornith-1.5-35B-A3B (21.71) plus the 9B embedder with its vision tower (6.252) is 27.96 GB, leaving
+  about 8 GB — roughly 100,000 tokens of KV cache. A retrieval-augmented agent loop with both models
+  resident, on a laptop, on a plane. On the 8 GB machine neither of those two fits alone.</p>
+  <p><strong>But keep carrying the index.</strong> Indexing is prefill-bound and linear in tokens;
+  the M4 is perhaps 4–8× faster than the M1, which turns a 20-hour job into a 3–5 hour one. That is
+  better and still not something to start on a plane. The reveal above stands: build at home, carry
+  the file, and use the M4's headroom for <em>querying</em> — and for embedding the new material you
+  create on the trip, which is a small incremental job rather than a full rebuild.</p>
+  <p>The vector-store calculator now offers the <strong>48 GB M4</strong> budget. See <a href="../reference/three-machines.html">Three Machines</a>.</p>
+</div>
+
+<nav class="footer-nav">
+  <strong>Workspace</strong>
+  <ul>
+    <li><a href="../index.html">Workspace index — all lessons</a></li>
+    <li><a href="0018-the-context-window.html">Lesson 18 · The Context Window</a> — why retrieval beats loading files in</li>
+    <li><a href="0016-fine-tuning-and-soup.html">Lesson 16 · Fine-Tuning and Soup</a> · <a href="0014-reading-a-model-card.html">Lesson 14 · Reading a Model Card</a></li>
+    <li><a href="../reference/napkin-math.html">Reference · Napkin math</a> · <a href="../GLOSSARY.md">Glossary</a> · <a href="../MISSION.md">Mission</a></li>
+  </ul>
+</nav>
+
+</div>
+<script src="../assets/quiz.js"></script>
+<script src="../assets/vecstore.js"></script>
+</body>
+</html>

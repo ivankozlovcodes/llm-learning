@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 14 · Reading a Model Card</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<div class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 14 · Local LLM Fluency</p>
+  <h1>Reading a Model Card</h1>
+  <p class="standfirst">A repeatable procedure for deciding whether a model will run, how fast, and
+  whether the claims are true — using only what the publisher already gave you.</p>
+  <div class="meta">
+    <span>~12 minutes</span>
+    <span>Prerequisites: <a href="0003-the-cache-has-a-price.html">3</a>, <a href="0006-the-quantization-ladder.html">6</a></span>
+    <span><a href="../MISSION.md">Mission</a> · <a href="../GLOSSARY.md">Glossary</a></span>
+  </div>
+</header>
+
+<p>You have watched this done several times now. This lesson turns it into a checklist you can run
+in about two minutes on any model, and it deliberately never trusts the README.</p>
+
+<div class="keystone">
+  <span class="label">The one idea</span>
+  <p>Everything you need is in two places the publisher <em>cannot</em> fudge: the
+  <strong><code>config.json</code></strong> and the <strong>file sizes</strong>. The README is
+  marketing; those two are measurements.</p>
+</div>
+
+<h2>The six-step pass</h2>
+
+<h3>1. Parameter count — from the BF16 files, not the name</h3>
+<p>Sum the unquantized files and divide by 2 bytes per parameter. Qwen3.8-27B's BF16 shards total
+54.7 GB, so it is 27.3B parameters. Names round, and some "9B" models are 9.2B in ways that matter
+at the memory boundary.</p>
+
+<h3>2. Effective bits per weight — from the file you will actually download</h3>
+<div class="formula">file bytes × 8 ÷ parameters = real bpw</div>
+<p>This is the step that told you <code>UD-IQ1_S</code> is 1.81 bits, not 1. Do it every time. Quant
+labels are family names, not measurements.</p>
+
+<h3>3. Active vs total parameters — the MoE question</h3>
+<p><code>num_experts</code> and <code>num_experts_per_tok</code> in <code>config.json</code>. Total
+sets whether it loads; active sets how fast it decodes (Lesson 1). An <code>A3B</code> suffix names
+the active count directly. This single distinction is the largest source of wrong speed expectations
+in local LLM discussion.</p>
+
+<h3>4. KV cache geometry — the number nobody quotes</h3>
+<div class="formula">2 × layers × kv_heads × head_dim × 2 bytes = bytes per token</div>
+<p>Read <code>num_hidden_layers</code>, <code>num_key_value_heads</code>, <code>head_dim</code>.
+This varies by an order of magnitude between models of similar size and it is never in the README.
+Ornith-1.5-35B-A3B has <strong>2 KV heads</strong> and needs 80 KB per token; Qwen3 32B has 8 and
+needs 256 KB. That is a bigger practical difference than most benchmark gaps.</p>
+
+<h3>5. Context: advertised vs affordable</h3>
+<p><code>max_position_embeddings</code> is what the model was trained for.
+<code>(your budget − weights) ÷ KV bytes per token</code> is what you can hold. Lesson 5 found a 26×
+gap on the 8 GB machine. Always compute the second number; never quote the first.</p>
+
+<h3>6. Licence — from the API, not the README</h3>
+<p>The <code>cardData.license</code> field on the Hugging Face API is the machine-readable answer.
+MIT and Apache-2.0 are unencumbered; several major releases ship under bespoke conditional licences
+that restrict commercial use or scale.</p>
+
+<h2>A worked pass</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Step</th><th>Ornith-1.5-35B-A3B</th><th>Where from</th></tr></thead>
+  <tbody>
+    <tr><td>Parameters</td><td>35B total, ~3B active</td><td><code>num_experts: 256</code>, <code>num_experts_per_tok: 8</code></td></tr>
+    <tr><td>Q4_K_M size</td><td>21.71 GB</td><td>File listing</td></tr>
+    <tr><td>Effective bpw</td><td>~4.96</td><td>21.71 × 8 ÷ 35</td></tr>
+    <tr><td>KV geometry</td><td>40 layers, 2 KV heads, head-dim 256</td><td><code>config.json</code></td></tr>
+    <tr><td>KV per token</td><td><strong>80 KB</strong></td><td>2 × 40 × 2 × 256 × 2</td></tr>
+    <tr><td>Advertised context</td><td>262,144</td><td><code>max_position_embeddings</code></td></tr>
+    <tr><td>Affordable on 48 GB</td><td>~328,000 — the full window</td><td>(48 − 21.71) ÷ 80 KB</td></tr>
+    <tr><td>Decode ceiling at 400 GB/s</td><td>~217 t/s, ~110 realistic</td><td>3B × 4.96 ÷ 8 = 1.84 GB/token</td></tr>
+    <tr><td>Licence</td><td>MIT</td><td>HF API <code>cardData</code></td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Two minutes, no README, and you know it runs at full context on the 64 GB machine at around
+100 tok/s under an unrestricted licence. No benchmark table was consulted.</p>
+
+<h2>What to distrust</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Claim</th><th>Why to discount it</th><th>Check instead</th></tr></thead>
+  <tbody>
+    <tr><td>Benchmark scores in the README</td><td>Self-reported, self-selected, sometimes contaminated</td><td>Independent leaderboards; better, your own task</td></tr>
+    <tr><td>"Supports 1M context"</td><td>Trained-for, not affordable, and quality usually degrades far earlier</td><td>Your memory budget</td></tr>
+    <tr><td>"Runs on 8 GB"</td><td>Usually weights only, no cache, no OS</td><td>Weights + KV at your context</td></tr>
+    <tr><td>"Beats <em>&lt;frontier model&gt;</em>"</td><td>True on some slice; the slice is the claim</td><td>Which benchmark, and does it resemble your work</td></tr>
+    <tr><td>Parameter count in the name</td><td>Rounded, and silent about active vs total</td><td>BF16 file sizes and the config</td></tr>
+    <tr><td>"1-bit quantization"</td><td>Family name; real value is 1.7–2.0</td><td>File size × 8 ÷ params</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <span class="tag">The benchmark that matters</span>
+  <p>None of the published numbers measure your workload. If you are building an agent harness, the
+  only evaluation that counts is: does this model emit correct tool calls, on your schemas, in your
+  context, at your quantization? Twenty saved transcripts from your own harness outrank every
+  leaderboard — and unlike a leaderboard, they cannot be gamed by the publisher.</p>
+</div>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <span class="qnum">Question 1</span>
+  <p class="q">Where do you get a model's true parameter count?</p>
+  <div class="options">
+    <button class="opt" data-correct>BF16 file size halved</button>
+    <button class="opt">The model's repository name</button>
+    <button class="opt">The README specification table</button>
+    <button class="opt">The quantized file size</button>
+  </div>
+  <div class="explain">
+    <strong>BF16 total ÷ 2 bytes.</strong> Unquantized weights are exactly two bytes per parameter,
+    so the file size is a direct measurement. Names round — "27B" was really 27.3B — and a quantized
+    file cannot give you the count without already knowing the bits per weight.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 2</span>
+  <p class="q">Which config field most affects how much context you can afford?</p>
+  <div class="options">
+    <button class="opt" data-correct>Number of KV heads</button>
+    <button class="opt">Maximum position embeddings</button>
+    <button class="opt">Number of experts</button>
+    <button class="opt">Hidden size dimension</button>
+  </div>
+  <div class="explain">
+    <strong>KV heads.</strong> They multiply directly into bytes-per-token, and they vary hugely —
+    2 on Ornith-35B-A3B versus 8 on Qwen3 32B, a 4× difference in cache cost. Max position
+    embeddings tells you what the model was trained for, which is not what you can hold.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 3</span>
+  <p class="q">A README says "runs on 8 GB". What is it most likely omitting?</p>
+  <div class="options">
+    <button class="opt" data-correct>KV cache and OS</button>
+    <button class="opt">The quantization used</button>
+    <button class="opt">Required disk space</button>
+    <button class="opt">The inference runtime</button>
+  </div>
+  <div class="explain">
+    <strong>KV cache and OS overhead.</strong> "Runs on 8 GB" almost always means the weights file
+    is under 8 GB. Add an agent-scale cache and 3 GB of macOS and the real requirement is often
+    double. This is exactly how a 6.19 GB model becomes unrunnable on an 8 GB machine.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 4</span>
+  <p class="q">For choosing a model for your harness, which evidence ranks highest?</p>
+  <div class="options">
+    <button class="opt" data-correct>Your own saved transcripts</button>
+    <button class="opt">Independent public leaderboards</button>
+    <button class="opt">The publisher's benchmark table</button>
+    <button class="opt">Community forum consensus</button>
+  </div>
+  <div class="explain">
+    <strong>Your own transcripts.</strong> They measure the thing you actually need — correct tool
+    calls on your schemas at your quantization — and cannot be gamed. Independent leaderboards come
+    second; publisher tables are the weakest evidence and the most prominently displayed.
+  </div>
+</div>
+
+<div class="scoreboard" data-scoreboard></div>
+
+<div class="ask">
+  <strong>Your teacher is one message away.</strong> Worth asking: "run this pass on <em>&lt;model&gt;</em>
+  for me", or "how would I build an eval set from my pi transcripts?"
+</div>
+
+<nav class="footer-nav">
+  <strong>Workspace</strong>
+  <ul>
+    <li><a href="0013-subagents-and-batching.html">Lesson 13 · Sub-agents and Batching</a></li>
+    <li><a href="0015-the-landscape.html">Lesson 15 · The Landscape</a></li>
+    <li><a href="../GLOSSARY.md">Glossary</a> · <a href="../RESOURCES.md">Resources</a> · <a href="../MISSION.md">Mission</a></li>
+  </ul>
+</nav>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

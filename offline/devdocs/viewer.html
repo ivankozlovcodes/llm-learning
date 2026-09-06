@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Offline Docs</title>
+<link rel="stylesheet" href="../../assets/lesson.css">
+<style>
+  body { margin: 0; height: 100vh; overflow: hidden; }
+  .app { display: grid; grid-template-columns: 22rem 1fr; height: 100vh; }
+  @media (max-width: 720px) { .app { grid-template-columns: 1fr; } .pane { display: none; } .app.reading .side { display: none; } .app.reading .pane { display: block; } }
+
+  .side { border-right: 1px solid var(--rule); display: flex; flex-direction: column; min-height: 0; background: var(--paper-alt); }
+  .side header { padding: .9rem 1rem .7rem; border-bottom: 1px solid var(--rule); }
+  .side h1 { font-family: var(--sans); font-size: .7rem; font-weight: 700; letter-spacing: .13em;
+    text-transform: uppercase; color: var(--accent); margin: 0 0 .6rem; }
+  #q { width: 100%; font-family: var(--mono); font-size: .88rem; padding: .5rem .65rem;
+    border: 1px solid var(--rule); border-radius: 4px; background: var(--paper); color: var(--ink); }
+  #q:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .sets { display: flex; flex-wrap: wrap; gap: .25rem; padding: .6rem 1rem; border-bottom: 1px solid var(--rule); }
+  .sets button { font-family: var(--sans); font-size: .68rem; font-weight: 600; padding: .2rem .5rem;
+    border: 1px solid var(--rule); border-radius: 3px; background: var(--paper); color: var(--ink-faint); cursor: pointer; }
+  .sets button.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+  .hits { overflow-y: auto; flex: 1; min-height: 0; }
+  .hit { padding: .45rem 1rem; border-bottom: 1px solid var(--rule); cursor: pointer; display: block; }
+  .hit:hover, .hit.sel { background: var(--accent-soft); }
+  .hit .n { font-family: var(--mono); font-size: .82rem; color: var(--ink); display: block;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hit .m { font-family: var(--sans); font-size: .68rem; color: var(--ink-faint); }
+  .side footer { padding: .55rem 1rem; border-top: 1px solid var(--rule); font-family: var(--sans);
+    font-size: .68rem; color: var(--ink-faint); }
+
+  .pane { overflow-y: auto; padding: 2.2rem 2.6rem 6rem; min-height: 0; }
+  @media (max-width: 900px) { .pane { padding: 1.6rem 1.2rem 4rem; } }
+  .pane .crumb { font-family: var(--sans); font-size: .72rem; color: var(--ink-faint); margin-bottom: 1.2rem; }
+  .pane .back { display: none; font-family: var(--sans); font-size: .78rem; color: var(--accent); cursor: pointer; margin-bottom: 1rem; }
+  @media (max-width: 720px) { .app.reading .pane .back { display: block; } }
+  .doc { max-width: 46rem; }
+  .doc pre { background: var(--paper-alt); border: 1px solid var(--rule); border-radius: 4px;
+    padding: .8rem 1rem; overflow-x: auto; font-size: .82rem; line-height: 1.5; }
+  .doc code { font-family: var(--mono); font-size: .86em; }
+  .doc pre code { background: none; padding: 0; }
+  .doc table { width: 100%; border-collapse: collapse; font-size: .88rem; margin: 1.2rem 0; }
+  .doc th, .doc td { border: 1px solid var(--rule); padding: .45rem .6rem; text-align: left; }
+  .doc img { max-width: 100%; }
+  .doc h1 { font-size: 1.9rem; } .doc h2 { font-family: var(--serif); text-transform: none;
+    letter-spacing: normal; color: var(--ink); font-size: 1.4rem; border: none; padding: 0; margin: 2rem 0 .6rem; }
+  .doc h3 { font-size: 1.15rem; }
+  .doc a { color: var(--accent); }
+  .empty { color: var(--ink-faint); font-family: var(--sans); font-size: .95rem; max-width: 34rem; }
+  .empty kbd { font-family: var(--mono); font-size: .82em; border: 1px solid var(--rule);
+    border-bottom-width: 2px; border-radius: 3px; padding: .05em .35em; }
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <div class="side">
+    <header>
+      <h1>Offline Docs</h1>
+      <input id="q" type="search" placeholder="Search…  (press /)" autocomplete="off" spellcheck="false">
+    </header>
+    <div class="sets" id="sets"></div>
+    <div class="hits" id="hits"></div>
+    <footer id="stat"></footer>
+  </div>
+  <div class="pane" id="pane">
+    <div class="back" id="back">← results</div>
+    <div class="crumb" id="crumb"></div>
+    <div class="doc" id="doc">
+      <p class="empty">Type to search across every installed docset. <kbd>/</kbd> focuses the box,
+      <kbd>↑</kbd><kbd>↓</kbd> move, <kbd>Enter</kbd> opens.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+/* Docsets register themselves through this global. The setup script converts
+   DevDocs' index.json and db.json into index.js / db.js files that call it, so
+   everything loads over file:// without a server. */
+window.DEVDOCS = (function () {
+  var meta = {}, index = {}, db = {}, waiting = {};
+  return {
+    manifest: function (list) { window.DEVDOCS._list = list; },
+    meta: function (slug, m) { meta[slug] = m; },
+    index: function (slug, data) { index[slug] = data; },
+    db: function (slug, data) { db[slug] = data; if (waiting[slug]) { waiting[slug].forEach(function (f) { f(); }); delete waiting[slug]; } },
+    _meta: meta, _index: index, _db: db, _waiting: waiting, _list: []
+  };
+})();
+</script>
+<script src="manifest.js" onerror="document.getElementById('stat').textContent='manifest.js missing — run the setup script'"></script>
+
+<script>
+(function () {
+  'use strict';
+  var D = window.DEVDOCS;
+  var slugs = D._list || [];
+  var active = {};
+  var hits = [], sel = 0;
+  var $q = document.getElementById('q'), $hits = document.getElementById('hits'),
+      $doc = document.getElementById('doc'), $crumb = document.getElementById('crumb'),
+      $sets = document.getElementById('sets'), $stat = document.getElementById('stat'),
+      $app = document.getElementById('app');
+
+  slugs.forEach(function (s) { active[s] = true; });
+
+  function loadScript(src, cb) {
+    var s = document.createElement('script');
+    s.src = src; s.onload = cb || function () {};
+    s.onerror = function () { $doc.innerHTML = '<p class="empty">Could not load <code>' + src + '</code>.</p>'; };
+    document.head.appendChild(s);
+  }
+
+  // Index files are small; load them all up front so search covers everything.
+  var pending = slugs.length;
+  if (!pending) {
+    $stat.textContent = 'No docsets installed.';
+  } else {
+    slugs.forEach(function (s) {
+      loadScript(s + '/index.js', function () {
+        if (--pending === 0) { renderSets(); search(); }
+      });
+    });
+  }
+
+  function label(s) { return (D._meta[s] && D._meta[s].name) || s; }
+
+  function renderSets() {
+    $sets.innerHTML = slugs.map(function (s) {
+      return '<button data-s="' + s + '" class="' + (active[s] ? 'on' : '') + '">' + label(s) + '</button>';
+    }).join('');
+    $sets.querySelectorAll('button').forEach(function (b) {
+      b.onclick = function () { active[b.dataset.s] = !active[b.dataset.s]; renderSets(); search(); };
+    });
+    var n = slugs.reduce(function (a, s) { return a + ((D._index[s] || { entries: [] }).entries.length); }, 0);
+    $stat.textContent = slugs.length + ' docsets · ' + n.toLocaleString() + ' entries';
+  }
+
+  function score(name, q) {
+    var n = name.toLowerCase();
+    if (n === q) return 0;
+    if (n.indexOf(q) === 0) return 1;
+    var i = n.indexOf(q);
+    return i === -1 ? -1 : 2 + i;
+  }
+
+  function search() {
+    var q = $q.value.trim().toLowerCase();
+    hits = []; sel = 0;
+    if (q) {
+      slugs.forEach(function (s) {
+        if (!active[s]) return;
+        var idx = D._index[s]; if (!idx) return;
+        idx.entries.forEach(function (e) {
+          var sc = score(e.name, q);
+          if (sc >= 0) hits.push({ s: s, e: e, sc: sc });
+        });
+      });
+      hits.sort(function (a, b) { return a.sc - b.sc || a.e.name.length - b.e.name.length; });
+      hits = hits.slice(0, 300);
+    }
+    $hits.innerHTML = hits.length
+      ? hits.map(function (h, i) {
+          return '<div class="hit' + (i === sel ? ' sel' : '') + '" data-i="' + i + '">' +
+                 '<span class="n">' + esc(h.e.name) + '</span>' +
+                 '<span class="m">' + label(h.s) + ' · ' + esc(h.e.type || '') + '</span></div>';
+        }).join('')
+      : (q ? '<div class="hit"><span class="m">No matches.</span></div>' : '');
+    $hits.querySelectorAll('.hit[data-i]').forEach(function (n) {
+      n.onclick = function () { sel = +n.dataset.i; open(hits[sel]); };
+    });
+  }
+
+  function esc(s) { return String(s).replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }); }
+
+  function open(h) {
+    if (!h) return;
+    $app.classList.add('reading');
+    var path = h.e.path.split('#')[0], frag = h.e.path.split('#')[1];
+    show(h.s, path, frag);
+  }
+
+  function show(slug, path, frag) {
+    if (!D._db[slug]) {
+      $doc.innerHTML = '<p class="empty">Loading ' + esc(label(slug)) + '…</p>';
+      (D._waiting[slug] = D._waiting[slug] || []).push(function () { show(slug, path, frag); });
+      if (D._waiting[slug].length === 1) loadScript(slug + '/db.js');
+      return;
+    }
+    var html = D._db[slug][path];
+    $crumb.textContent = label(slug) + ' · ' + path;
+    if (html == null) { $doc.innerHTML = '<p class="empty">No page at <code>' + esc(path) + '</code>.</p>'; return; }
+    $doc.innerHTML = html;
+    // Docset links are extensionless and relative to the docset root; route them internally.
+    $doc.querySelectorAll('a[href]').forEach(function (a) {
+      var href = a.getAttribute('href');
+      if (/^(https?:|mailto:)/.test(href)) { a.target = '_blank'; a.rel = 'noopener'; return; }
+      a.onclick = function (ev) {
+        ev.preventDefault();
+        var t = href.replace(/^\.\//, ''), f = '';
+        if (t.indexOf('#') === 0) { jump(t.slice(1)); return; }
+        if (t.indexOf('#') > -1) { f = t.split('#')[1]; t = t.split('#')[0]; }
+        show(slug, t, f);
+      };
+    });
+    $doc.parentElement.scrollTop = 0;
+    if (frag) jump(frag);
+  }
+
+  function jump(id) {
+    var el = document.getElementById(id) || $doc.querySelector('[name="' + id + '"]');
+    if (el) el.scrollIntoView();
+  }
+
+  $q.addEventListener('input', search);
+  document.getElementById('back').onclick = function () { $app.classList.remove('reading'); };
+  document.addEventListener('keydown', function (e) {
+    if (e.key === '/' && document.activeElement !== $q) { e.preventDefault(); $q.focus(); $q.select(); return; }
+    if (document.activeElement !== $q) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      sel = Math.max(0, Math.min(hits.length - 1, sel + (e.key === 'ArrowDown' ? 1 : -1)));
+      $hits.querySelectorAll('.hit').forEach(function (n, i) { n.classList.toggle('sel', i === sel); });
+      var s = $hits.querySelector('.hit.sel'); if (s) s.scrollIntoView({ block: 'nearest' });
+    } else if (e.key === 'Enter') { e.preventDefault(); open(hits[sel]); }
+  });
+  $q.focus();
+})();
+</script>
+</body>
+</html>

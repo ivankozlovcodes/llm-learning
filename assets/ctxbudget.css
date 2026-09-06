@@ -1,0 +1,66 @@
+/* ============================================================
+   Stacked context-budget bar. Used by ctxbudget.js.
+   Depends on custom properties from lesson.css.
+   ============================================================ */
+
+.calc .ctx-bar {
+  position: relative;
+  display: flex;
+  height: 2.1rem;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--paper-alt);
+  border: 1px solid var(--rule);
+  margin-bottom: 0.9rem;
+}
+
+.calc .ctx-bar .seg { display: block; height: 100%; transition: width 0.15s ease; }
+
+/* One ramp, darkest for the tokens you control least. */
+.seg-system { background: #7a2e1d; }
+.seg-env    { background: #96543f; }
+.seg-tools  { background: #b07a5e; }
+.seg-agents { background: #c9a184; }
+.seg-files  { background: #ddc4ab; }
+.seg-hist   { background: #ece0d0; }
+.seg-free   { background: transparent; }
+
+@media (prefers-color-scheme: dark) {
+  .seg-system { background: #e08a6a; }
+  .seg-env    { background: #bb6f56; }
+  .seg-tools  { background: #965a45; }
+  .seg-agents { background: #714435; }
+  .seg-files  { background: #4e3026; }
+  .seg-hist   { background: #33221b; }
+}
+
+/* The binding ceiling, drawn over the bar. */
+.calc .ctx-bar .ceil {
+  position: absolute;
+  top: -1px; bottom: -1px;
+  width: 2px;
+  background: var(--ink);
+  box-shadow: 0 0 0 1px var(--paper);
+}
+
+.calc .ctx-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.1rem;
+  font-family: var(--sans);
+  font-size: 0.76rem;
+  color: var(--ink-soft);
+  margin-bottom: 1.3rem;
+}
+.calc .ctx-key .k { display: inline-flex; align-items: center; gap: 0.4rem; }
+.calc .ctx-key .k i {
+  width: 0.7rem; height: 0.7rem; border-radius: 2px; display: inline-block;
+}
+.calc .ctx-key .k b {
+  font-family: var(--mono); font-weight: 600; color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+@media print {
+  .calc .ctx-bar { height: 1.4rem; }
+}

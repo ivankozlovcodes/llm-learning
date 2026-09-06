@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 11 · Designing a Compaction Policy</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+<link rel="stylesheet" href="../assets/agentsim.css">
+</head>
+<body>
+<div class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 11 · Local LLM Fluency</p>
+  <h1>Designing a Compaction Policy</h1>
+  <p class="standfirst">The plugin this workspace has been building toward. Every cost model you
+  have learned meets here, and the output is a number you can implement.</p>
+  <div class="meta">
+    <span>~25 minutes</span>
+    <span>Prerequisites: <a href="0003-the-cache-has-a-price.html">3</a>, <a href="0009-anatomy-of-a-turn.html">9</a></span>
+    <span><a href="../MISSION.md">Mission</a> · <a href="../GLOSSARY.md">Glossary</a></span>
+  </div>
+</header>
+
+<p>Compaction is the only mechanism that lets an agent session outlive its memory budget. It is also
+the mechanism that destroys prefix cache reuse. Getting the policy wrong in either direction is
+expensive, and the right answer is computable rather than a matter of taste.</p>
+
+<div class="keystone">
+  <span class="label">The one idea</span>
+  <p>Compaction trades <strong>one expensive turn</strong> for <strong>reclaimed memory</strong>.
+  Therefore: <strong>compact as late as safety allows, and as deeply as coherence allows.</strong></p>
+  <p>Frequent shallow compaction is the worst of both worlds — you pay the uncached-prefill penalty
+  often and reclaim little each time.</p>
+</div>
+
+<h2>What compaction actually costs</h2>
+
+<p>From Lesson 9, compaction lives in <code>transformContext()</code>, which runs before every LLM
+call. pi also exposes <code>session_before_compact</code> so an extension can replace the default
+logic entirely. Whichever you hook, the physics is the same:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Cost</th><th>Magnitude</th><th>From</th></tr></thead>
+  <tbody>
+    <tr><td>Summarisation call</td><td>One LLM round trip</td><td>Can be delegated to a cheaper model</td></tr>
+    <tr><td><strong>Prefix invalidation</strong></td><td>Next turn prefills the whole new context uncached</td><td>Lesson 2 — the dominant cost</td></tr>
+    <tr><td>Information loss</td><td>Lossy and permanent for the model</td><td>pi keeps full history in JSONL; the model does not see it</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The middle row is the one people miss. Compaction makes the context <em>shorter</em>, so it feels
+like it should be faster — but the shortened context is entirely new to the cache, so you prefill
+all of it. A compaction down to 5,000 tokens still costs a 5,000-token prefill.</p>
+
+<h2>The trigger arithmetic</h2>
+
+<p>You have everything needed to compute the threshold:</p>
+
+<div class="formula">
+  usable context (tokens) = ( budget × threshold − weights ) ÷ KV bytes per token
+  <span class="cap">budget from Lesson 5 · KV per token from Lesson 3</span>
+</div>
+
+<p>On the 8 GB machine with Qwen3-4B Q4_K_M — 4.2 GB budget, 2.50 GB weights, 144 KB per token —
+at a 90% trigger:</p>
+
+<div class="formula">
+  (4.2 × 0.90 − 2.50) GB ÷ 144 KB  =  <span class="num">~9,000 tokens</span>
+  <span class="cap">compact when the conversation reaches this</span>
+</div>
+
+<h2>Simulate it</h2>
+
+<p>Run the same session under each policy. Watch the spikes — every spike is a compaction paying
+full uncached prefill.</p>
+
+<div class="agentsim" data-compaction></div>
+
+<h2>Reading the results</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Policy</th><th>Behaviour</th><th>Verdict</th></tr></thead>
+  <tbody>
+    <tr><td>Never compact</td><td>Runs fast, then dies</td><td>Only viable if sessions are short and bounded</td></tr>
+    <tr><td>Frequent and shallow (50%, keep 10)</td><td>Constant spikes, little reclaimed each time</td><td><strong>Worst option.</strong> Maximum penalty, minimum benefit</td></tr>
+    <tr><td>Balanced (75%, keep 6)</td><td>Periodic spikes, steady memory</td><td>Reasonable default</td></tr>
+    <tr><td>Rare and deep (90%, keep 3)</td><td>Infrequent large spikes</td><td><strong>Usually optimal.</strong> Fewest invalidations</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The shape of the answer is the same on both machines, but the stakes differ enormously. On the
+8 GB machine compaction fires within a handful of turns and the policy dominates the experience. On
+the 64 GB machine with an MoE model, many sessions never compact at all — the policy is close to
+irrelevant, and you should not spend design effort on it.</p>
+
+<div class="note">
+  <span class="tag">Why not push the threshold to 99%?</span>
+  <p>Because the trigger fires <em>between</em> turns and the next turn's tool result is
+  unpredictable. A tool that returns 8,000 tokens when you had 500 of headroom overruns the budget
+  before compaction can run. The gap between your threshold and 100% is insurance against the
+  largest tool result you might plausibly receive — which is another argument for Lesson 10's rule
+  about returning the minimum.</p>
+</div>
+
+<h2>Design decisions, priced</h2>
+
+<h3>Summarise with a cheaper model</h3>
+<p>Summarisation is not the task your good model is for. Delegating it to a small fast model removes
+the round trip from the critical path — and on the 8 GB machine, where you have exactly one model
+loaded, this argues for doing it on the <em>other</em> machine instead. That is Lesson 12.</p>
+
+<h3>Keep the system prompt and tools out of the summary</h3>
+<p>They are the stable head of the prefix. Compact only the conversation body and the tool
+definitions stay byte-identical — which means a runtime with block-level prefix caching can still
+reuse that portion. Rewriting the whole prompt throws away reuse you did not have to lose.</p>
+
+<h3>Compact at a turn boundary, never mid-turn</h3>
+<p>Compacting between a tool call and its result strands the model with a call it cannot see the
+outcome of. <code>shouldStopAfterTurn</code> and <code>turn_end</code> exist precisely to give you a
+clean seam.</p>
+
+<h3>Preserve structure, not prose</h3>
+<p>What the model needs from history is which files were touched, what was decided, what failed and
+why. A flowing narrative summary is longer and less useful than a structured one. Terse and
+schematic beats readable here — the reader is a machine with a memory budget.</p>
+
+<h2>A policy you could implement tomorrow</h2>
+
+<div class="keystone">
+  <span class="label">A correction from Lesson 18</span>
+  <p>The policy below triggers on <strong>memory</strong> alone, and that is only half right. There
+  is a second ceiling — <strong>attention</strong> — past which the model is still answering and is
+  measurably less reliable. On the 8 GB machine memory binds first (~11,800 tokens against ~16,000),
+  so this policy is correct there. On the <strong>64 GB machine it is wrong</strong>: memory permits
+  around 328,000 tokens while reliability falls away nearer 32,000, so a memory trigger
+  <em>never fires</em> and quality degrades with no signal at all.</p>
+  <p>The arithmetic below still stands exactly. It just needs a second trigger beside it —
+  <a href="0018-the-context-window.html">Lesson 18</a> derives both ceilings and the evidence for the
+  attention one.</p>
+</div>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Parameter</th><th>8 GB · Qwen3-4B</th><th>64 GB · Qwen3-30B-A3B</th></tr></thead>
+  <tbody>
+    <tr><td>Trigger</td><td>85% of budget (~8,500 tokens)</td><td>85% (~150,000 tokens)</td></tr>
+    <tr><td>Keep recent</td><td>3 turns</td><td>8 turns</td></tr>
+    <tr><td>Summary target</td><td>≤800 tokens, structured</td><td>≤2,000 tokens</td></tr>
+    <tr><td>Summariser</td><td>Same model (only one fits)</td><td>A smaller model, or the 8 GB box</td></tr>
+    <tr><td>Never touch</td><td colspan="2">System prompt, tool definitions</td></tr>
+    <tr><td>Boundary</td><td colspan="2">Turn end only</td></tr>
+    <tr><td>Expected overhead</td><td>~15% of session time</td><td>Usually 0 — never fires</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The last row is the finding worth carrying. <strong>On adequate hardware with the right model,
+the best compaction policy is one that never runs.</strong> Choosing an MoE with few KV heads
+(Lesson 3) does more for long sessions than any compaction strategy — and it is a decision you make
+once rather than tuning forever.</p>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <span class="qnum">Question 1</span>
+  <p class="q">Compaction shortens the context. Why is the following turn slow?</p>
+  <div class="options">
+    <button class="opt" data-correct>The prefix was rewritten</button>
+    <button class="opt">The summary is expensive</button>
+    <button class="opt">Memory must be reallocated</button>
+    <button class="opt">The model reloads weights</button>
+  </div>
+  <div class="explain">
+    <strong>The prefix was rewritten.</strong> Cached keys and values correspond to the old token
+    sequence; the new shortened context is entirely unfamiliar, so all of it is prefilled uncached.
+    Shorter, but paid for in full — which is why compacting often is worse than compacting deeply.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 2</span>
+  <p class="q">Which compaction policy is generally worst?</p>
+  <div class="options">
+    <button class="opt" data-correct>Frequent and shallow</button>
+    <button class="opt">Rare and deep</button>
+    <button class="opt">Never compacting</button>
+    <button class="opt">Threshold at eighty-five</button>
+  </div>
+  <div class="explain">
+    <strong>Frequent and shallow.</strong> It pays the invalidation penalty constantly while
+    reclaiming little each time. Never compacting is at least fast until it dies — and for short
+    bounded sessions that is a legitimate choice.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 3</span>
+  <p class="q">Why not set the compaction trigger at 99% of budget?</p>
+  <div class="options">
+    <button class="opt" data-correct>Tool results are unpredictable</button>
+    <button class="opt">Summarisation needs headroom</button>
+    <button class="opt">The model performs worse</button>
+    <button class="opt">Prefix caching stops working</button>
+  </div>
+  <div class="explain">
+    <strong>Tool results are unpredictable.</strong> The trigger fires between turns; the next turn
+    might append 8,000 tokens. The gap below 100% is insurance sized against the largest plausible
+    tool result — one more reason to make tools return the minimum.
+  </div>
+</div>
+
+<div class="quiz">
+  <span class="qnum">Question 4</span>
+  <p class="q">On the 64 GB machine with an MoE model, what is the best compaction policy?</p>
+  <div class="options">
+    <button class="opt" data-correct>One that never fires</button>
+    <button class="opt">Aggressive and frequent</button>
+    <button class="opt">Identical to the small machine</button>
+    <button class="opt">Whatever pi defaults to</button>
+  </div>
+  <div class="explain">
+    <strong>One that never fires.</strong> Qwen3-30B-A3B uses 96 KB per token and leaves ~29 GB of
+    headroom — a session would need hundreds of thousands of tokens to trigger. Model choice removed
+    the problem, which beats tuning a policy for it.
+  </div>
+</div>
+
+<div class="scoreboard" data-scoreboard></div>
+
+<div class="ask">
+  <strong>Your teacher is one message away.</strong> Worth asking: "write the transformContext hook
+  for this policy", "what should a structured summary contain?", or "how do I test a compaction
+  policy without waiting for a real session?"
+</div>
+
+<nav class="footer-nav">
+  <strong>Workspace</strong>
+  <ul>
+    <li><a href="0009-anatomy-of-a-turn.html">Lesson 9 · Anatomy of a Turn</a></li>
+    <li><a href="0010-tool-design.html">Lesson 10 · Tool Design for Local Models</a></li>
+    <li><a href="0012-multi-model-routing.html">Lesson 12 · Multi-Model Routing</a></li>
+    <li><a href="../GLOSSARY.md">Glossary</a> · <a href="../RESOURCES.md">Resources</a> · <a href="../MISSION.md">Mission</a></li>
+  </ul>
+</nav>
+
+</div>
+<script src="../assets/quiz.js"></script>
+<script src="../assets/compaction.js"></script>
+</body>
+</html>
